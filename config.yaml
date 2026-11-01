@@ -1,1 +1,28 @@
 # symbol, horizon_minutes, dates, lags, paths
+symbol: BTCUSDT
+horizon_minutes: 15
+start_date: 2026-01-01
+end_date: 2026-06-30
+
+# Relative paths are resolved from the repo root
+data_dir: data
+
+archive_url: https://data.binance.vision/data
+markets:
+  spot:
+    archive_path: spot
+    rest_url: https://api.binance.com/api/v3
+  perp:
+    archive_path: futures/um
+    rest_url: https://fapi.binance.com/fapi/v1
+
+# A missing file stops the run if required is true; otherwise it is logged and skipped.
+# liquidationSnapshot is not listed: the archive does not publish it for USD-M (checked 2026-11-01).
+archive_datasets:
+  - {dataset: klines, market: spot, frequency: monthly, interval: 1m, required: true}
+  - {dataset: klines, market: perp, frequency: monthly, interval: 1m, required: true}
+  - {dataset: premiumIndexKlines, market: perp, frequency: monthly, interval: 1m, required: true}
+  - {dataset: metrics, market: perp, frequency: daily, required: false}
+  # Optional second-level lead-lag figure (about 6 MB per day, per market): uncomment to download
+  # - {dataset: aggTrades, market: spot, frequency: daily, required: false, start_date: 2026-03-02, end_date: 2026-03-04}
+  # - {dataset: aggTrades, market: perp, frequency: daily, required: false, start_date: 2026-03-02, end_date: 2026-03-04}
