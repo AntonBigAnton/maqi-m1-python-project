@@ -75,10 +75,12 @@ $$
 | `klines` 1m | USD-M perp | Archive | 1 min | Perp VWAP, perp signed flow |
 | `premiumIndexKlines` 1m | USD-M perp | Archive | 1 min | Basis / premium |
 | `metrics` | USD-M perp | Archive | ≈5 min (verify) | Open interest, long/short and taker ratios |
-| `liquidationSnapshot` | USD-M perp | Archive | Event (verify completeness) | Liquidation flow |
+| Deleveraging events (derived, no download) | USD-M perp | Built from `metrics` + perp `klines` | 5 min | Proxy for liquidation flow (see below and Section 6) |
 | `fundingRate` | USD-M perp | REST API `/fapi/v1/fundingRate` | 8 h (verify per symbol) | Funding level and changes |
 | First candle / exchange info | Spot + perp | REST API | — | Availability check |
 | `aggTrades`, a few days of BTC only | Spot + perp | Archive | Tick | Optional second-level lead-lag figure (Section 7) |
+
+**No liquidation history:** the original plan used the archive's `liquidationSnapshot`, but Binance does not publish it for USD-M (checked 2026-11-01). The REST routes do not help either: `/fapi/v1/allForceOrders` returns 404, and `/fapi/v1/forceOrders` is a `USER_DATA` endpoint ("User's Force Orders") that needs an API key, which would also break the no-secrets rule (Section 11). Liquidations are therefore replaced by a proxy built from data we already collect (Section 6).
 
 **Download size:** klines are one small monthly file per symbol and market, so the full set should stay modest. Measure the actual total after the first download and record it in the README. If it is heavier than expected, shorten the window or add a `--quick` mode (one month) for a fast check.
 
@@ -174,7 +176,7 @@ Features are split into two blocks. The baseline model uses block A only; the fu
 | B — perp | Perp lead return | Past perp return minus past spot return | Both |
 | B — perp | Open interest change | % change in open interest since last reading | `metrics` |
 | B — perp | Taker / long-short ratios | Latest available ratios | `metrics` |
-| B — perp | Liquidations | Liquidated notional by side | `liquidationSnapshot` |
+| B — perp | Deleveraging events | Count of proxy events by side over the lag window, closed 5-minute bars only (definition below) | `metrics` + perp klines |
 | B — perp | Funding | Last settled funding rate | Funding history |
 
 **Rules:**
@@ -183,6 +185,28 @@ Features are split into two blocks. The baseline model uses block A only; the fu
 - **Respect resolution:** positioning features (≈5 min) are usable at the 15-minute horizon; funding (8 h) is slow context, not a short-term signal.
 - **Horizon-aware lags:** lag sets are derived from `horizon_minutes`, so a different horizon gets sensible features without code changes.
 - **Feature count discipline:** start with about 10–15 features per block, justify each, add more only if a hypothesis needs it.
+
+**Deleveraging-event proxy (replaces liquidations):** a sharp fall in open interest during a violent or one-sided perp move suggests positions are being closed, possibly by force. It is evaluated at each 5-minute `metrics` reading, with all three measures taken over the same 5 minutes:
+
+$$
+\text{event} = \{\Delta OI\% \le q_{1\%}\} \wedge \left(\{|r^{perp}| \ge q_{95\%}\} \vee \{|\text{signed flow share}| \ge q_{95\%}\}\right)
+$$
+
+- **Side:** falling price = suspected long deleveraging; rising price = suspected short deleveraging.
+- **Clusters:** events less than 30 minutes apart merge into one cluster, dated at its first event.
+- **Thresholds:** full-sample quantiles for the descriptive analysis; for model features, fitted on training data only (Section 9).
+- **Timing:** an event is only known once its 5-minute bar has closed, so a feature at *t* uses closed bars only. Confirm what `create_time` means in `metrics` (whether the reading is known at that timestamp) before relying on this alignment.
+- **Naming:** always "suspected deleveraging events" in the report and slides, never "liquidations".
+
+First check on BTCUSDT, 2026-01-01 to 2026-06-30, using full-sample quantiles (to be reviewed; the 1% row is the proposal):
+
+| Open-interest threshold | $\Delta OI\%$ cut-off | Events | Falling / rising price | Clusters |
+| --- | --- | --- | --- | --- |
+| $q_{0.5\%}$ | −0.551% | 91 | 58 / 33 | 77 |
+| $q_{1\%}$ (proposal) | −0.386% | 161 | 98 / 63 | 127 |
+| $q_{2\%}$ | −0.262% | 279 | 157 / 122 | 210 |
+
+All rows use the 95th percentile of $|r^{perp}|$ (29.9 bps) and of $|\text{signed flow share}|$ (0.463). Report the event study at more than one threshold to show the result does not depend on this choice.
 
 ## 7. Descriptive analysis
 
@@ -205,7 +229,7 @@ This is the centrepiece of the project. With one coin and one horizon, the descr
 | D. Perp-specific signals | Feature correlation matrix (blocks A and B) | Redundancy between perp and spot features; multicollinearity risk | Models |
 | E. Lead-lag | Cross-correlation of perp flow, basis and perp returns vs future spot returns, lags −30 to +30 min | Direction and length of the lead-lag; does it fade within 15 min? | H1, H2 |
 | E. Lead-lag | Granger causality tests, both directions | Does perp predict spot, spot predict perp, or both? | H1, H2 |
-| E. Lead-lag | Event study around large liquidation clusters (spot returns and basis before/after) | How quickly forced perp flow shows up in spot | H2 |
+| E. Lead-lag | Event study around suspected deleveraging clusters (spot returns and basis before/after) | How quickly a perp deleveraging shock shows up in spot, at 5-minute resolution | H2 |
 | E. Lead-lag | Optional: second-level cross-correlation on a few days of BTC trades | Where the fastest lead-lag lives; justifies the minute grid | H2 |
 
 **Interpretation standard:** each item ends with one or two sentences: what we see, what it implies for H1 or H2 or for a modelling choice, and any caveat (e.g. Granger causality is predictive, not causal). The block-E results are summarised in a short "descriptive verdict" before the models, so the reader knows what to expect from Section 9.
@@ -271,17 +295,17 @@ The report keeps 12 figures, weighted towards the descriptive analysis; extras g
 | 3 | Intraday seasonality of volume and volatility | Line chart by hour of day | Activity cycles behind the time-of-day features |
 | 4 | Return distributions at 1 and 15 minutes | Histogram with normal overlay + QQ plot | Fat tails justify the three-class target |
 | 5 | Autocorrelation of returns vs absolute returns | ACF bar charts | Weak linear predictability, strong volatility clustering |
-| 6 | Basis over time, liquidation clusters marked | Line chart | Size and timing of perp-spot deviations |
+| 6 | Basis over time, suspected deleveraging clusters marked | Line chart | Size and timing of perp-spot deviations |
 | 7 | Funding rate and open interest over time | Two aligned line panels | Leverage build-up phases |
 | 8 ★ | Cross-correlation of perp signals vs future spot returns, lags −30 to +30 min | Line chart with confidence band | Lead-lag exists and how fast it fades (H2) |
-| 9 ★ | Event study around liquidation clusters | Mean spot-return path with confidence band | How quickly forced perp flow reaches spot (H2) |
+| 9 ★ | Event study around suspected deleveraging clusters | Mean spot-return path with confidence band | How quickly a perp deleveraging shock reaches spot (H2) |
 | 10 | Feature correlation matrix, blocks A and B | Heatmap | Redundancy between spot and perp features |
 | 11 ★ | Forecast gain of A + B over A per walk-forward fold, with Clark-West p-values | Dot plot with fold labels | Main result (H1) |
 | 12 ★ | Coefficients / permutation importance of perp features | Horizontal bar chart with HAC intervals | Which perp signals drive the gain (H1) |
 
 **Conventions:**
 
-- One colour for spot and one for perp, fixed across every figure; liquidation clusters always marked the same way; colour is never the only carrier of meaning.
+- One colour for spot and one for perp, fixed across every figure; deleveraging clusters always marked the same way; colour is never the only carrier of meaning.
 - Units on every axis (bps, %, minutes); dates in UTC.
 - Libraries: matplotlib/seaborn for static figures; plotly for interactive ones in the notebook.
 - Optional: a small Streamlit app to browse the descriptive figures; only if the core notebook is finished (a bonus, not a requirement).
@@ -291,7 +315,7 @@ The report keeps 12 figures, weighted towards the descriptive analysis; extras g
 1. The question and why perps might lead spot.
 2. Data and pipeline: BTC spot and perp klines, one-command run, coin- and horizon-agnostic config.
 3. Descriptive: market structure and basis (figures 2 and 6).
-4. Descriptive: lead-lag and the liquidation event study (figures 8 and 9).
+4. Descriptive: lead-lag and the deleveraging event study (figures 8 and 9).
 5. Method: the ablation, walk-forward validation, Clark-West test.
 6. Results: figures 11 and 12 (H1).
 7. Limitations and next steps: other coins and horizons are one config change away.
@@ -355,7 +379,8 @@ project/
 | Repo fails when the grader clones and runs it | Most of the grade lost | One-command pipeline, README with exact steps, fresh-clone test on another machine before Nov 24 |
 | Download too heavy for the grader | Run abandoned or penalised | 1-min klines instead of tick data; measure size early; `--quick` mode; shorten window if needed |
 | A team member can't explain part of the code at the defense | Flagged as vibe-coded | Every PR reviewed and explained by a teammate; walk-through session of all modules before Dec 1 |
-| Archive dataset missing or incomplete for some period (`metrics`, `liquidationSnapshot`) | Block B partly empty | Check coverage in week 1; drop the feature or the period and say so |
+| Archive dataset missing or incomplete for some period (`metrics`) | Block B partly empty | Check coverage in week 1; drop the feature or the period and say so |
+| No public liquidation history (`liquidationSnapshot` not published for USD-M) | Liquidation feature and figure 9 lose their source | Deleveraging-event proxy (Section 6), labelled as a proxy in the report and slides |
 | Leakage (same-time perp and spot prices) | Fake, inflated results | As-of joins, embargo, no-lookahead test; results that look too good = bug |
 | Null result | Weak-looking conclusion | Hypotheses fixed in advance and an extensive descriptive analysis make a null result informative; report effect sizes with intervals |
 | Binance changes archive format or endpoints | Download step breaks | Pin URLs and schemas in config; checksum checks fail loudly |
@@ -365,6 +390,7 @@ project/
 
 - Single venue, single asset, single horizon: results describe Binance BTC at 15 minutes and may not carry over to other coins, venues or horizons. The agnostic pipeline makes those checks cheap to run later.
 - Trade-based target, no historical spot bid/ask, so some microstructure noise remains at 1 min.
+- No observed liquidation data: the deleveraging proxy cannot separate forced from voluntary position closing and has no liquidated notional. Its 5-minute resolution also means the event study cannot show anything faster than 5 minutes. Events are selected on large perp moves, and spot often moves in the same bars, so only the path after the event bar is evidence of a lead.
 - Predictive results, not causal ones (including Granger tests).
 - Forecast gains need not be tradable after costs.
 - The sample period's regime (trend, volatility) may not generalise.
