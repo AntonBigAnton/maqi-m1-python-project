@@ -1,12 +1,25 @@
 # symbol, horizon_minutes, dates, lags, paths
+# Every run parameter lives here; nothing in src/ hardcodes the coin, the horizon or the dates.
+
 symbol: BTCUSDT
 horizon_minutes: 15
+
+# Sample window (inclusive, UTC)
 start_date: 2026-01-01
 end_date: 2026-06-30
 
+# Feature lags in minutes (spec §6)
+lags: [1, 5, 15, 60]
+
+# Seed for every random step (model fits, permutations, bootstraps)
+seed: 42
+
 # Relative paths are resolved from the repo root
 data_dir: data
+figures_dir: report/figures
+tables_dir: report/tables
 
+# Data sources (spec §3)
 archive_url: https://data.binance.vision/data
 markets:
   spot:
