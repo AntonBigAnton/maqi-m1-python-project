@@ -25,6 +25,10 @@ class ChecksumError(Exception):
     """A downloaded archive file does not match its published .CHECKSUM."""
 
 
+class CoverageError(Exception):
+    """A market's candles do not cover the whole sample window."""
+
+
 def make_session():
     """Return a session that retries transient errors and honours Retry-After."""
     # Use the OS trust store: antivirus TLS scanning breaks requests' bundled CA list.
@@ -163,49 +167,80 @@ def load_or_fetch_json(path, log_path, url, fetch):
 
 
 def fetch_market_info(session, rest_url, symbol):
-    """Return the raw first 1-min candle and exchange info entry for a symbol."""
+    """Return the raw first and latest 1-min candles and exchange info entry for a symbol."""
+    klines_url = f"{rest_url}/klines"
     first_candle = get_json(
-        session,
-        f"{rest_url}/klines",
-        {"symbol": symbol, "interval": "1m", "startTime": 0, "limit": 1},
+        session, klines_url, {"symbol": symbol, "interval": "1m", "startTime": 0, "limit": 1}
     )
+    # Without startTime, the endpoint returns the most recent candles.
+    last_candle = get_json(session, klines_url, {"symbol": symbol, "interval": "1m", "limit": 1})
     # The perp endpoint ignores the symbol filter and returns every listed contract.
     exchange_info = get_json(session, f"{rest_url}/exchangeInfo", {"symbol": symbol})
     entries = [entry for entry in exchange_info["symbols"] if entry["symbol"] == symbol]
-    return {"first_candle": first_candle, "symbol_info": entries}
+    return {"first_candle": first_candle, "last_candle": last_candle, "symbol_info": entries}
+
+
+def load_market_info(session, raw, market, rest_url, symbol, end_ms):
+    """Return the cached market info, refetching it if it predates the window end.
+
+    The latest candle changes over time, so a cache written before the window
+    ended (or by an older version without last_candle) is refreshed once.
+    """
+    path = raw / market / "availability" / f"{symbol}.json"
+
+    def load():
+        return load_or_fetch_json(
+            path, raw / "download_log.csv", rest_url, lambda: fetch_market_info(session, rest_url, symbol)
+        )
+
+    was_cached = path.exists()
+    info = load()
+    last_candle = info.get("last_candle")
+    if was_cached and (not last_candle or last_candle[0][0] + 60_000 <= end_ms):
+        path.unlink()
+        info = load()
+    return info
 
 
 def check_availability(session, cfg, symbol, start, end):
-    """Save and return a table of each market's status and earliest candle for a symbol."""
+    """Save and return a table of each market's coverage; fail if the window is not fully covered.
+
+    A market covers the window if its first 1-min candle opens at or before the
+    window start and its latest candle opens at or after the window's last minute.
+    """
     raw = raw_dir(cfg["data_dir"])
+    start_ms, end_ms = window_to_ms(start, end)
+    last_minute_ms = end_ms + 1 - 60_000
     rows = []
     for market, market_cfg in cfg["markets"].items():
-        rest_url = market_cfg["rest_url"]
-        info = load_or_fetch_json(
-            raw / market / "availability" / f"{symbol}.json",
-            raw / "download_log.csv",
-            rest_url,
-            lambda: fetch_market_info(session, rest_url, symbol),
-        )
+        info = load_market_info(session, raw, market, market_cfg["rest_url"], symbol, end_ms)
         if not info["first_candle"] or not info["symbol_info"]:
-            raise ValueError(f"{symbol} is not listed on the {market} market")
-        first_candle = pd.to_datetime(info["first_candle"][0][0], unit="ms", utc=True)
-        covers_start = first_candle <= pd.Timestamp(start, tz="UTC")
-        if not covers_start:
-            log.warning("%s %s starts on %s, after the window start", symbol, market, first_candle)
+            raise CoverageError(f"{symbol} is not listed on the {market} market")
+        first_ms = info["first_candle"][0][0]
+        last_ms = info["last_candle"][0][0]
         rows.append(
             {
                 "market": market,
                 "symbol": symbol,
                 "status": info["symbol_info"][0]["status"],
-                "first_candle_utc": first_candle,
+                "first_candle_utc": pd.to_datetime(first_ms, unit="ms", utc=True),
+                "last_candle_utc": pd.to_datetime(last_ms, unit="ms", utc=True),
                 "window_start": start,
                 "window_end": end,
-                "covers_window_start": covers_start,
+                "covers_window_start": first_ms <= start_ms,
+                "covers_window_end": last_ms >= last_minute_ms,
             }
         )
     table = pd.DataFrame(rows)
     table.to_csv(Path(cfg["data_dir"]) / f"availability_{symbol}.csv", index=False)
+
+    gaps = table[~(table["covers_window_start"] & table["covers_window_end"])]
+    if not gaps.empty:
+        details = "; ".join(
+            f"{row.market} has candles from {row.first_candle_utc} to {row.last_candle_utc}"
+            for row in gaps.itertuples()
+        )
+        raise CoverageError(f"{symbol} does not cover {start} to {end}: {details}")
     return table
 
 

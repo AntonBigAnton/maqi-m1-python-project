@@ -1,6 +1,7 @@
 # small checks: archive URLs, checksums, skip-if-present, funding pagination
 import hashlib
 import io
+import json
 import zipfile
 
 import pytest
@@ -149,3 +150,60 @@ def test_window_to_ms_includes_the_whole_last_day():
     start_ms, end_ms = fetch.window_to_ms("2026-01-01", "2026-01-01")
     assert start_ms == 1767225600000
     assert end_ms == start_ms + 86_400_000 - 1
+
+
+DAY_MS = 86_400_000
+JAN_1_MS = 1767225600000
+
+
+def market_session(first_ms, last_ms, markets=("spot", "perp")):
+    """Serve first/latest candles and exchange info for each market."""
+    responses = {}
+    for market in markets:
+        rest_url = CFG["markets"][market]["rest_url"]
+        responses[f"{rest_url}/klines"] = [
+            FakeResponse(payload=[[first_ms]]),
+            FakeResponse(payload=[[last_ms]]),
+        ]
+        responses[f"{rest_url}/exchangeInfo"] = FakeResponse(
+            payload={"symbols": [{"symbol": "BTCUSDT", "status": "TRADING"}]}
+        )
+    return FakeSession(responses)
+
+
+def test_availability_passes_when_the_window_is_covered(tmp_path):
+    cfg = {**CFG, "data_dir": tmp_path}
+    session = market_session(JAN_1_MS - DAY_MS, JAN_1_MS + 30 * DAY_MS)
+    table = fetch.check_availability(session, cfg, "BTCUSDT", "2026-01-01", "2026-01-01")
+    assert table["covers_window_start"].all() and table["covers_window_end"].all()
+    assert (tmp_path / "availability_BTCUSDT.csv").exists()
+
+
+@pytest.mark.parametrize(
+    "first_ms, last_ms",
+    [
+        (JAN_1_MS + 60_000, JAN_1_MS + 30 * DAY_MS),  # listed one minute after the window start
+        (JAN_1_MS - DAY_MS, JAN_1_MS + DAY_MS - 120_000),  # last candle misses the window's final minute
+    ],
+)
+def test_availability_fails_loudly_on_partial_coverage(tmp_path, first_ms, last_ms):
+    cfg = {**CFG, "data_dir": tmp_path}
+    session = market_session(first_ms, last_ms)
+    with pytest.raises(fetch.CoverageError, match="does not cover"):
+        fetch.check_availability(session, cfg, "BTCUSDT", "2026-01-01", "2026-01-01")
+    assert (tmp_path / "availability_BTCUSDT.csv").exists()
+
+
+def test_availability_refreshes_a_cache_older_than_the_window_end(tmp_path):
+    cfg = {**CFG, "data_dir": tmp_path}
+    for market in ("spot", "perp"):
+        stale = tmp_path / "raw" / market / "availability" / "BTCUSDT.json"
+        stale.parent.mkdir(parents=True)
+        stale.write_text(
+            json.dumps({"first_candle": [[JAN_1_MS]], "last_candle": [[JAN_1_MS]], "symbol_info": [{}]}),
+            encoding="utf-8",
+        )
+    session = market_session(JAN_1_MS - DAY_MS, JAN_1_MS + 30 * DAY_MS)
+    table = fetch.check_availability(session, cfg, "BTCUSDT", "2026-01-01", "2026-01-01")
+    assert table["covers_window_end"].all()
+    assert len(session.calls) == 6
