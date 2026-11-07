@@ -1,21 +1,11 @@
 # entry point: fetch → clean → features → models → figures
 import argparse
 import logging
-from pathlib import Path
 
 import pandas as pd
-import yaml
 
 from src import fetch
-
-REPO_ROOT = Path(__file__).resolve().parent.parent
-
-
-def load_config(path=REPO_ROOT / "config.yaml"):
-    with open(path, encoding="utf-8") as f:
-        cfg = yaml.safe_load(f)
-    cfg["data_dir"] = REPO_ROOT / cfg["data_dir"]
-    return cfg
+from src.config import DEFAULT_CONFIG, load_config
 
 
 def sample_window(cfg, quick=False):
@@ -29,7 +19,7 @@ def sample_window(cfg, quick=False):
 
 def main(argv=None):
     parser = argparse.ArgumentParser()
-    parser.add_argument("--config", default=REPO_ROOT / "config.yaml", help="path to the config file")
+    parser.add_argument("--config", default=DEFAULT_CONFIG, help="path to the config file")
     parser.add_argument("--quick", action="store_true", help="run on one month for a fast check")
     args = parser.parse_args(argv)
 

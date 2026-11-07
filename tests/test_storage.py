@@ -4,7 +4,8 @@ from datetime import date
 import pandas as pd
 
 from src import clean
-from src.pipeline import REPO_ROOT, load_config, sample_window
+from src.config import REPO_ROOT, load_config
+from src.pipeline import sample_window
 
 
 def test_load_or_build_saves_then_reads_from_cache(tmp_path):

@@ -1,4 +1,5 @@
 import re
+import ast
 from pathlib import Path
 
 import pytest
@@ -33,13 +34,27 @@ def test_missing_key_raises(tmp_path):
         load_config(path)
 
 
+def string_literals(path):
+    """Yield (line, text) for every string in a module, docstrings and comments excluded."""
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    docstrings = {
+        id(node.body[0].value)
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef))
+        and ast.get_docstring(node) is not None
+    }
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Constant) and isinstance(node.value, str) and id(node) not in docstrings:
+            yield node.lineno, node.value
+
+
 def test_src_hardcodes_no_symbol_or_date():
-    """Issue #3: the coin and the sample window come from config.yaml only (docstrings excepted)."""
-    pattern = re.compile(r"""["'](?:BTC|ETH)\w*["']|["']\d{4}-\d{2}-\d{2}["']""")
+    """Issue #3: the coin and the sample window come from config.yaml only."""
+    pattern = re.compile(r"\b(?:BTC|ETH)[A-Z]*\b|\b\d{4}-\d{2}-\d{2}\b")
     offenders = [
-        f"{path.name}:{number}: {line.strip()}"
+        f"{path.name}:{line}: {text!r}"
         for path in sorted((REPO_ROOT / "src").glob("*.py"))
-        for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1)
-        if pattern.search(line) and not line.lstrip().startswith(("#", '"""'))
+        for line, text in string_literals(path)
+        if pattern.search(text)
     ]
     assert not offenders, "\n".join(offenders)
