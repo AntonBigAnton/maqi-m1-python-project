@@ -4,7 +4,7 @@ import json
 import pandas as pd
 import pytest
 
-from src import clean, fetch
+from src import clean, fetch, schemas
 
 SPOT_KLINES = {"dataset": "klines", "market": "spot", "frequency": "monthly", "interval": "1m", "required": True}
 PERP_KLINES = {"dataset": "klines", "market": "perp", "frequency": "monthly", "interval": "1m", "required": True}
@@ -15,8 +15,8 @@ METRICS = {"dataset": "metrics", "market": "perp", "frequency": "daily", "requir
 JAN_1_MS = 1767225600000
 DEC_31_LAST_MS = JAN_1_MS - 60_000
 
-PERP_HEADER = ",".join(clean.KLINE_COLUMNS)
-METRICS_HEADER = ",".join(clean.METRICS_COLUMNS)
+PERP_HEADER = ",".join(schemas.KLINE_COLUMNS)
+METRICS_HEADER = ",".join(schemas.METRICS_COLUMNS)
 
 
 def make_cfg(tmp_path, datasets):
@@ -91,7 +91,7 @@ def test_unexpected_header_stops_the_run(tmp_path):
 
 
 def test_candles_off_the_minute_grid_stop_the_run():
-    raw = pd.DataFrame([kline_row(JAN_1_MS + 1).split(",")], columns=clean.KLINE_COLUMNS)
+    raw = pd.DataFrame([kline_row(JAN_1_MS + 1).split(",")], columns=schemas.KLINE_COLUMNS)
     with pytest.raises(ValueError, match="off the 1-minute grid"):
         clean.to_clean_table(raw, "klines", "2026-01-01", "2026-01-31", "test")
 
