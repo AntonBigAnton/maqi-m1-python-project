@@ -4,7 +4,7 @@ import logging
 
 import pandas as pd
 
-from src import fetch
+from src import clean, fetch, panel
 from src.config import DEFAULT_CONFIG, load_config
 
 
@@ -27,6 +27,8 @@ def main(argv=None):
     cfg = load_config(args.config)
     start, end = sample_window(cfg, args.quick)
     fetch.fetch_all(cfg, cfg["symbol"], start, end)
+    clean.clean_all(cfg, cfg["symbol"], start, end)
+    panel.build_panel(cfg, cfg["symbol"], start, end)
 
 
 if __name__ == "__main__":
