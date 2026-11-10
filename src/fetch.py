@@ -80,6 +80,17 @@ def archive_relative_path(cfg, spec, symbol, period):
     return "/".join(parts)
 
 
+def archive_file_path(cfg, spec, symbol, period):
+    """Local path of one downloaded archive zip; its extracted CSV sits next to it."""
+    file_name = Path(archive_relative_path(cfg, spec, symbol, period)).name
+    return raw_dir(cfg["data_dir"]) / spec["market"] / spec["dataset"] / symbol / file_name
+
+
+def funding_path(data_dir, symbol, start, end):
+    """Local path of the cached funding history JSON for a window."""
+    return raw_dir(data_dir) / "perp" / "fundingRate" / symbol / f"{symbol}-fundingRate-{start}-{end}.json"
+
+
 def download_archive_file(session, url, zip_path, log_path):
     """Download, verify and unzip one archive file; return its status.
 
@@ -135,7 +146,7 @@ def fetch_archive_dataset(session, cfg, spec, symbol, start, end):
     for period in archive_periods(spec["frequency"], start, end):
         relative_path = archive_relative_path(cfg, spec, symbol, period)
         url = f"{cfg['archive_url']}/{relative_path}"
-        zip_path = raw / spec["market"] / spec["dataset"] / symbol / Path(relative_path).name
+        zip_path = archive_file_path(cfg, spec, symbol, period)
         status = download_archive_file(session, url, zip_path, raw / "download_log.csv")
         if status == "missing":
             if spec["required"]:
@@ -273,7 +284,7 @@ def fetch_funding(session, cfg, symbol, start, end):
     url = f"{cfg['markets']['perp']['rest_url']}/fundingRate"
     start_ms, end_ms = window_to_ms(start, end)
     records = load_or_fetch_json(
-        raw / "perp" / "fundingRate" / symbol / f"{symbol}-fundingRate-{start}-{end}.json",
+        funding_path(cfg["data_dir"], symbol, start, end),
         raw / "download_log.csv",
         url,
         lambda: fetch_funding_pages(session, url, symbol, start_ms, end_ms),
