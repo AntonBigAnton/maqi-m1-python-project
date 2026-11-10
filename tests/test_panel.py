@@ -138,6 +138,34 @@ def test_missing_optional_datasets_keep_the_same_columns():
     assert bare["premium_index"].isna().all() and bare["sum_open_interest"].isna().all()
 
 
+def test_minutes_before_metrics_and_funding_are_known_are_dropped():
+    settled = funding([JAN_1_MS + 2 * MINUTE], [0.0001])
+    panel = clean.make_panel(
+        START, END, candles(range(10)), candles(range(10)), settled,
+        metrics=metrics([0, 5], [1.0, 2.0]), metrics_known_after_minutes=5,
+    )
+    trimmed = clean.drop_unknown_start(panel)
+    assert trimmed["open_time"].iloc[0] == JAN_1_MS + 5 * MINUTE
+    assert trimmed[["metrics_time", "funding_time"]].notna().all().all()
+    assert trimmed.index[0] == 0
+
+
+def test_later_missing_readings_are_kept():
+    panel = clean.make_panel(
+        START, END, candles([0]), candles([0]), NO_FUNDING,
+        metrics=metrics([0], [1.0]), metrics_known_after_minutes=5, metrics_max_age_minutes=15,
+    )
+    trimmed = clean.drop_unknown_start(panel)
+    assert trimmed["open_time"].iloc[0] == JAN_1_MS + 5 * MINUTE
+    assert len(trimmed) == 1440 - 5
+    assert trimmed["sum_open_interest"].isna().any()
+
+
+def test_a_dataset_that_was_not_downloaded_does_not_empty_the_panel():
+    panel = clean.make_panel(START, END, candles([0]), candles([0]), NO_FUNDING)
+    assert len(clean.drop_unknown_start(panel)) == 1440
+
+
 def test_spot_and_perp_that_do_not_track_stop_the_run():
     panel = clean.make_panel(START, END, candles([0]), candles([0], close=100_000.0), NO_FUNDING)
     with pytest.raises(ValueError, match="median"):
@@ -165,5 +193,8 @@ def test_build_panel_reads_clean_tables_and_saves_one_parquet(tmp_path):
     panel = clean.build_panel(cfg, "BTCUSDT", START, END)
 
     assert clean.panel_path(tmp_path, "BTCUSDT", START, END).exists()
+    # Metrics stamped 00:00 are known at 00:05, so the panel starts there.
+    assert panel["open_time"].iloc[0] == JAN_1_MS + 5 * MINUTE
     assert row(panel, 5)["sum_open_interest"] == 1.0
+    assert len(panel) == 1440 - 5
     assert panel["gap"].sum() == 1440 - 10

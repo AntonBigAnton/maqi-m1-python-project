@@ -269,7 +269,8 @@ def clean_all(cfg, symbol, start, end):
 
 
 # Panel: one row per minute of the window. Row open_time = t holds the candles of [t, t + 1 min);
-# values joined from slower datasets are the last ones known at or before t.
+# values joined from slower datasets are the last ones known at or before t. The panel starts
+# at the first minute where metrics and funding are both known (a few minutes into the window).
 
 # Spot and perp closes of the same minute differ by the basis, a few bps for liquid pairs.
 # A median gap above 1% means a join or unit bug, not a market effect.
@@ -357,6 +358,26 @@ def make_panel(start, end, spot, perp, funding, premium=None, metrics=None,
     return panel
 
 
+def drop_unknown_start(panel, time_columns=("metrics_time", "funding_time")):
+    """Drop the first minutes of the window, before every joined dataset has a known value.
+
+    Metrics are first known known_after_minutes into the window, and funding at the first
+    settlement after it starts. Only the start is trimmed: a later missing reading (an outage)
+    stays a missing value. A joined dataset with no value at all (an optional dataset that was
+    not downloaded) is ignored, so it does not empty the panel.
+    """
+    known = [panel[column].notna() for column in time_columns if panel[column].notna().any()]
+    if not known:
+        return panel
+    all_known = pd.concat(known, axis=1).all(axis=1).to_numpy()
+    if not all_known.any():
+        raise ValueError(f"No minute has a known value for all of {', '.join(time_columns)}")
+    first = int(all_known.argmax())
+    if first:
+        log.info("Dropped the first %d minutes, before %s were all known", first, ", ".join(time_columns))
+    return panel.iloc[first:].reset_index(drop=True)
+
+
 def check_spot_perp_tracking(panel):
     """Fail if spot and perp closes do not track each other, the symptom of a join or unit bug."""
     close_gap = (panel["perp_close"] / panel["spot_close"] - 1).abs().dropna()
@@ -402,6 +423,7 @@ def build_panel(cfg, symbol, start, end):
             metrics_known_after_minutes=metrics_spec.get("known_after_minutes", 0),
             metrics_max_age_minutes=metrics_spec.get("max_age_minutes"),
         )
+        panel = drop_unknown_start(panel)
         check_spot_perp_tracking(panel)
         log.info(
             "Panel: %d minutes, %d with spot missing, %d with perp missing",
