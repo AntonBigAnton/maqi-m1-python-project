@@ -28,6 +28,7 @@ def main(argv=None):
     start, end = sample_window(cfg, args.quick)
     fetch.fetch_all(cfg, cfg["symbol"], start, end)
     clean.clean_all(cfg, cfg["symbol"], start, end)
+    clean.build_panel(cfg, cfg["symbol"], start, end)
 
 
 if __name__ == "__main__":
