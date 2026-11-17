@@ -38,7 +38,8 @@ archive_datasets:
   # metrics: one row every 5 min (288 per day); all 181 days of 2026-01-01..2026-06-30 are published (checked 2026-11-07).
   # A row stamped create_time = t covers the 5 minutes [t, t + 5 min), like a kline's open_time,
   # so it is only known at t + 5 min: the panel's as-of join must shift it by known_after_minutes.
-  - {dataset: metrics, market: perp, frequency: daily, required: false, known_after_minutes: 5}
+  # A reading older than max_age_minutes is left missing in the panel instead of being carried forward.
+  - {dataset: metrics, market: perp, frequency: daily, required: false, known_after_minutes: 5, max_age_minutes: 15}
   # Optional second-level lead-lag figure (about 6 MB per day, per market): uncomment to download
   # - {dataset: aggTrades, market: spot, frequency: daily, required: false, start_date: 2026-03-02, end_date: 2026-03-04}
   # - {dataset: aggTrades, market: perp, frequency: daily, required: false, start_date: 2026-03-02, end_date: 2026-03-04}

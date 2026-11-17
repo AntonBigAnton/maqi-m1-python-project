@@ -3,7 +3,7 @@ from datetime import date
 
 import pandas as pd
 
-from src import clean
+from src import clean, panel
 from src.config import REPO_ROOT, load_config
 from src.pipeline import sample_window
 
@@ -23,8 +23,8 @@ def test_load_or_build_saves_then_reads_from_cache(tmp_path):
 
 
 def test_quick_and_full_runs_use_different_files():
-    full = clean.panel_path("data", "BTCUSDT", date(2026, 1, 1), date(2026, 6, 30))
-    quick = clean.panel_path("data", "BTCUSDT", date(2026, 1, 1), date(2026, 1, 31))
+    full = panel.panel_path("data", "BTCUSDT", date(2026, 1, 1), date(2026, 6, 30))
+    quick = panel.panel_path("data", "BTCUSDT", date(2026, 1, 1), date(2026, 1, 31))
     assert full != quick
 
 

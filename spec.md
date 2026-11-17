@@ -316,8 +316,10 @@ project/
 ├── src/
 │   ├── pipeline.py      # entry point: fetch → clean → features → models → figures
 │   ├── fetch.py         # archive download, checksums, REST calls + cache
-│   ├── clean.py         # raw → clean → 1-min panel
-│   ├── features.py      # blocks A and B, as-of joins
+│   ├── schemas.py       # column layouts of the archive files and the clean and panel tables
+│   ├── clean.py         # raw → clean: one typed table per dataset
+│   ├── panel.py         # clean → 1-min spot/perp panel, gap mask, as-of joins
+│   ├── features.py      # blocks A and B
 │   ├── models.py        # ablation fits (block A vs A + B)
 │   ├── evaluate.py      # walk-forward, metrics, Clark-West, DM
 │   └── plots.py         # one function per figure
