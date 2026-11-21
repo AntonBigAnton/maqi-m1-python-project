@@ -8,7 +8,8 @@ import pytest
 
 from src.config import REPO_ROOT, load_config
 from src.features import (
-    BLOCK_A, BLOCK_B, block_a, block_a_columns, block_b, block_b_columns, build_features, feature_lags,
+    BLOCK_A, BLOCK_B, block_a, block_a_columns, block_b, block_b_columns, build_features, cluster_events,
+    deleveraging_counts, deleveraging_events, feature_lags, sensitivity_table,
 )
 
 JAN_1_6AM_MS = 1767247200000  # 2026-01-01 06:00 UTC
@@ -127,11 +128,13 @@ def perp_toy_panel():
     premium = [1.0005] * 10
     premium[3] = 1.001
     panel["perp_vwap"] = panel["spot_vwap"] * premium
+    panel["perp_close"] = panel["perp_vwap"]
     panel["perp_signed_volume"] = 6.0
     panel["perp_volume"] = 20.0
     # two metrics readings: rows 0-4 and rows 5-9; open interest goes from 1000 to 1010
     panel["metrics_time"] = pd.array([JAN_1_6AM_MS] * 5 + [JAN_1_6AM_MS + 5 * MINUTE] * 5, dtype="Int64")
     panel["sum_open_interest"] = [1000.0] * 5 + [1010.0] * 5
+    panel["sum_open_interest_value"] = panel["sum_open_interest"] * 100
     panel["sum_toptrader_long_short_ratio"] = 2.0
     panel["count_long_short_ratio"] = 0.5
     panel["sum_taker_long_short_vol_ratio"] = 1.0
@@ -171,7 +174,9 @@ def test_block_b_columns_and_size():
     out = block_b(perp_toy_panel(), B_LAGS)
     assert list(out.columns) == block_b_columns(B_LAGS)
     assert BLOCK_B == block_b_columns(load_config()["lags"])
-    assert len(BLOCK_A) <= 15 and len(BLOCK_B) <= 15
+    # The models drop the 4 block B features that duplicate others (b_flow_div_*, b_basis_chg_*)
+    used_by_models = [c for c in BLOCK_B if not c.startswith(("b_flow_div_", "b_basis_chg_"))]
+    assert len(BLOCK_A) <= 15 and len(used_by_models) <= 15
     assert not set(BLOCK_A) & set(BLOCK_B)
 
 
@@ -180,8 +185,9 @@ def random_panel(rows, seed):
     rng = np.random.default_rng(seed)
     panel = pd.DataFrame({"open_time": [JAN_1_6AM_MS + i * MINUTE for i in range(rows)]})
     for column in [
-        "spot_vwap", "spot_volume", "perp_vwap", "perp_volume", "sum_open_interest",
-        "sum_toptrader_long_short_ratio", "count_long_short_ratio", "sum_taker_long_short_vol_ratio",
+        "spot_vwap", "spot_volume", "perp_vwap", "perp_close", "perp_volume", "sum_open_interest",
+        "sum_open_interest_value", "sum_toptrader_long_short_ratio", "count_long_short_ratio",
+        "sum_taker_long_short_vol_ratio",
     ]:
         panel[column] = rng.uniform(1, 2, rows)
     panel["spot_signed_volume"] = rng.uniform(-1, 1, rows)
@@ -197,10 +203,10 @@ def random_panel(rows, seed):
 # Metrics and funding on row t are already known at t, so they are changed after row t only.
 CANDLE_COLUMNS = [
     "spot_vwap", "spot_volume", "spot_signed_volume", "spot_count",
-    "perp_vwap", "perp_volume", "perp_signed_volume",
+    "perp_vwap", "perp_close", "perp_volume", "perp_signed_volume",
 ]
 KNOWN_AT_T_COLUMNS = [
-    "open_time", "metrics_time", "sum_open_interest", "sum_toptrader_long_short_ratio",
+    "open_time", "metrics_time", "sum_open_interest", "sum_open_interest_value", "sum_toptrader_long_short_ratio",
     "count_long_short_ratio", "sum_taker_long_short_vol_ratio", "funding_rate",
 ]
 
@@ -231,3 +237,116 @@ def test_changing_data_after_t_never_changes_features_up_to_t(t):
     after = build_features(changed, cfg)[columns]
     pd.testing.assert_frame_equal(before.loc[:t], after.loc[:t])
     assert not before.loc[t + 1:].equals(after.loc[t + 1:])  # the change did reach later rows
+
+
+# ---------- Deleveraging proxy: potential liquidations (#18) ----------
+
+# Fixed cut-offs, so the hand-built cases do not depend on quantiles of a tiny sample
+CUTS = {"oi_chg": -0.01, "abs_ret": 0.005, "abs_flow": 0.9}
+
+
+def delev_panel(oi_drop_bar=4, price_move=0.0, flow_share=0.0, rows=45):
+    """A perp panel from 06:00: flat price, flat open interest, balanced flow, one reading every 5 min.
+
+    The bar starting at minute 5 * oi_drop_bar sees open interest fall 2%, and optionally a price
+    move (by its last minute) and a one-sided flow.
+    """
+    minute = np.arange(rows)
+    bar = minute // 5
+    close = np.full(rows, 100.0)
+    close[minute >= 5 * oi_drop_bar + 4] = 100.0 * (1 + price_move)
+    signed = np.where(bar == oi_drop_bar, flow_share * 10.0, 0.0)
+    # The reading stamped s (covering bar s) is attached by the panel from minute s + 5 on
+    reading = bar - 1
+    oi = np.where(reading > oi_drop_bar, 980.0, 1000.0)
+    return pd.DataFrame({
+        "open_time": JAN_1_6AM_MS + minute * MINUTE,
+        "perp_close": close,
+        "perp_signed_volume": signed,
+        "perp_volume": 10.0,
+        "metrics_time": pd.array(JAN_1_6AM_MS + reading * 5 * MINUTE, dtype="Int64"),
+        "sum_open_interest": oi,
+        "sum_open_interest_value": oi * 100,
+    })
+
+
+def test_oi_drop_and_price_fall_is_one_long_liquidation():
+    events = deleveraging_events(delev_panel(price_move=-0.01), 0.01, thresholds=CUTS)
+    assert len(events) == 1
+    event = events.iloc[0]
+    assert event["side"] == "long"
+    assert event["bar_time"] == JAN_1_6AM_MS + 20 * MINUTE      # bar 06:20-06:24
+    assert event["known_at"] == JAN_1_6AM_MS + 30 * MINUTE      # bar closed at 06:25, its 06:25 reading known at 06:30
+    assert event["oi_chg_pct"] == pytest.approx(-2.0)
+    assert event["perp_ret_bps"] == pytest.approx(math.log(0.99) * 10_000)
+    assert event["oi_value_chg_usd"] == pytest.approx(-2000.0)
+
+
+def test_oi_drop_and_price_rise_is_a_short_liquidation():
+    events = deleveraging_events(delev_panel(price_move=0.01), 0.01, thresholds=CUTS)
+    assert list(events["side"]) == ["short"]
+
+
+def test_one_sided_flow_alone_is_enough():
+    events = deleveraging_events(delev_panel(flow_share=-1.0), 0.01, thresholds=CUTS)
+    assert list(events["side"]) == ["long"]  # price flat, so the selling flow decides
+
+
+def test_oi_drop_without_a_move_is_not_a_liquidation():
+    assert deleveraging_events(delev_panel(), 0.01, thresholds=CUTS).empty
+
+
+def events_at(minutes):
+    return pd.DataFrame({
+        "bar_time": [JAN_1_6AM_MS + m * MINUTE for m in minutes],
+        "known_at": [JAN_1_6AM_MS + (m + 5) * MINUTE for m in minutes],
+        "side": "long",
+        "oi_value_chg_usd": -1000.0,
+    })
+
+
+def test_events_20_minutes_apart_form_one_cluster():
+    clusters = cluster_events(events_at([0, 20]))
+    assert len(clusters) == 1
+    assert clusters.loc[0, "start"] == JAN_1_6AM_MS  # dated at its first event
+    assert clusters.loc[0, "events"] == 2
+
+
+def test_events_30_minutes_apart_still_merge():
+    assert len(cluster_events(events_at([0, 30]))) == 1
+
+def test_events_40_minutes_apart_stay_separate():
+    assert len(cluster_events(events_at([0, 40]))) == 2
+
+
+def test_counts_start_when_the_bar_closes():
+    counts = deleveraging_counts(delev_panel(price_move=-0.01), B_LAGS, thresholds=CUTS)
+    # bar 06:20-06:24 is known at 06:30 (row 30); block B keeps the 5-minute window here
+    assert counts.loc[29, "b_delev_long_5"] == 0
+    assert (counts.loc[30:34, "b_delev_long_5"] == 1).all()
+    assert counts.loc[35, "b_delev_long_5"] == 0
+    assert (counts.loc[20:35, "b_delev_short_5"] == 0).all()
+
+
+def test_sensitivity_table_has_one_row_per_cut_off():
+    table = sensitivity_table(random_panel(rows=600, seed=0))
+    assert list(table["oi_quantile_pct"]) == [0.5, 1.0, 2.0]
+    assert (table["events"] == table["falling"] + table["rising"]).all()
+    assert table["events"].is_monotonic_increasing  # a looser cut-off never finds fewer
+
+
+def test_past_cut_offs_never_use_later_data():
+    """The counts up to row t are identical whatever happens later, with "past" cut-offs."""
+    panel = random_panel(rows=2 * 1440, seed=0)
+    t = 2000
+    changed = panel.copy()
+    rng = np.random.default_rng(1)
+    for column in CANDLE_COLUMNS:
+        randomise(changed, column, t, rng)
+    for column in KNOWN_AT_T_COLUMNS:
+        randomise(changed, column, t + 1, rng)
+    # a loose cut-off so the random panel does have potential liquidations
+    before = deleveraging_counts(panel, [1, 5, 15], "past", oi_q=0.3)
+    after = deleveraging_counts(changed, [1, 5, 15], "past", oi_q=0.3)
+    assert before.loc[:t].sum().sum() > 0
+    pd.testing.assert_frame_equal(before.loc[:t], after.loc[:t])
