@@ -11,6 +11,18 @@ end_date: 2026-06-30
 # Feature lags in minutes (spec §6)
 lags: [1, 5, 15, 60]
 
+# Targets (spec §5): the classification threshold is k * past volatility * sqrt(horizon),
+# with k fitted on each fold's training rows so that flat_share of them are "flat".
+target:
+  vol_window_minutes: 60
+  flat_share: 0.333
+
+# Walk-forward validation (spec §9): monthly expanding folds, testing from this month on
+# (1 = first month of the window). Embargo is in minutes; null means the horizon (its minimum).
+walk_forward:
+  first_test_month: 3
+  embargo_minutes: null
+
 # Seed for every random step (model fits, permutations, bootstraps)
 seed: 42
 
