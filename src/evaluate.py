@@ -1,4 +1,6 @@
 # walk-forward, metrics, Clark-West, DM
+import json
+import logging
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -11,9 +13,11 @@ from statsmodels.stats.multitest import multipletests
 
 from src.models import (
     CLASSIFICATION_MODELS, DEFAULT_GRIDS, DOWN, FLAT, REGRESSION_MODELS, TARGET, UP, VOL_SCALE,
-    classify, feature_sets, fit_flat_threshold, fit_predict,
+    classify, feature_sets, fit_flat_threshold, fit_predict, model_frame,
 )
 from src.schemas import MS_PER_MINUTE
+
+log = logging.getLogger(__name__)
 
 # Walk-forward validation (spec §9). The window is cut into calendar months (UTC). Fold k tests
 # on month k and trains on every month before it (expanding window). Hyperparameters are tuned
@@ -302,12 +306,13 @@ def clark_west_table(predictions, models, lags, alpha=0.05):
             gain = oos_r2(group["y_true"], group["y_pred_big"]) - oos_r2(group["y_true"], group["y_pred_small"])
             records.append({"model": model, "fold": fold, "rows": len(group), "r2_gain": gain,
                             "cw_stat": stat, "p_value": p})
-    table = pd.DataFrame(records)
+    table = pd.DataFrame(records, columns=["model", "fold", "rows", "r2_gain", "cw_stat", "p_value"])
     pooled = table["fold"] == "all"
     table["p_holm"] = np.nan
-    table.loc[pooled, "p_holm"] = holm(table.loc[pooled, "p_value"])
     table["h1_supported"] = pd.Series(pd.NA, index=table.index, dtype="boolean")
-    table.loc[pooled, "h1_supported"] = table.loc[pooled, "p_holm"] < alpha
+    if pooled.any():  # no model to test (e.g. only the zero forecast) leaves an empty table
+        table.loc[pooled, "p_holm"] = holm(table.loc[pooled, "p_value"])
+        table.loc[pooled, "h1_supported"] = table.loc[pooled, "p_holm"] < alpha
     return table
 
 
@@ -372,3 +377,97 @@ def save_predictions(predictions, path):
     path.parent.mkdir(parents=True, exist_ok=True)
     predictions.to_parquet(path, index=False)
     return path
+
+
+# Full ablation run: one call from the panel with features to every modelling table of the report.
+
+# Non-nested comparisons tested with Diebold-Mariano: each linear model against boosting.
+DM_PAIRS = {"regression": [("ridge", "boosting"), ("lasso", "boosting")], "classification": [("logit", "boosting")]}
+
+
+def row_losses(predictions, task):
+    """Loss of every prediction row: squared error for regression, log loss of the true class for classification."""
+    keys = predictions[PREDICTION_KEYS].copy()
+    if task == "regression":
+        keys["loss"] = (predictions["y_true"] - predictions["y_pred"]) ** 2
+    else:
+        probabilities = predictions[list(CLASS_PROBABILITIES.values())].to_numpy(dtype=float)
+        true_column = predictions["class_true"].map({c: i for i, c in enumerate(CLASS_PROBABILITIES)}).to_numpy()
+        p_true = probabilities[np.arange(len(predictions)), true_column]
+        keys["loss"] = -np.log(np.clip(p_true, 1e-15, 1))  # same clipping as a zero probability in log_loss
+    return keys
+
+
+def diebold_mariano_table(predictions, task, lags, pairs=None):
+    """Diebold-Mariano test of each (model 1, model 2) pair on each feature set, pooled over folds.
+
+    A negative statistic means model 1 has the lower loss. Pairs with a model missing from the
+    predictions are skipped.
+    """
+    losses = row_losses(predictions, task)
+    present = set(losses["model"])
+    records = []
+    for model_1, model_2 in pairs if pairs is not None else DM_PAIRS[task]:
+        if not {model_1, model_2} <= present:
+            continue
+        for feature_set in sorted(losses["feature_set"].unique()):
+            rows = losses[losses["feature_set"] == feature_set]
+            pair = rows[rows["model"] == model_1].merge(
+                rows[rows["model"] == model_2], on=["fold", "open_time"], suffixes=("_1", "_2"), validate="one_to_one"
+            )
+            stat, p = diebold_mariano(pair["loss_1"], pair["loss_2"], lags)
+            records.append({"task": task, "model_1": model_1, "model_2": model_2, "feature_set": feature_set,
+                            "rows": len(pair), "mean_loss_diff": float((pair["loss_1"] - pair["loss_2"]).mean()),
+                            "dm_stat": stat, "p_value": p})
+    return pd.DataFrame(records, columns=["task", "model_1", "model_2", "feature_set", "rows", "mean_loss_diff",
+                                          "dm_stat", "p_value"])
+
+
+def table_path(tables_dir, symbol, horizon_minutes, name):
+    """CSV path of one results table, named by symbol and horizon so other runs never overwrite it."""
+    return Path(tables_dir) / f"{symbol}_h{horizon_minutes}_{name}.csv"
+
+
+def run_ablation(cfg, data, block_a, block_b, symbol, start, end, models=None, grids=None):
+    """Run the whole ablation (spec §8-9) and save its predictions and tables; returns the tables by name.
+
+    data is the panel with the feature columns of block_a and block_b added. Every model runs on
+    A and A + B over the walk-forward folds, for both tasks. Predictions go to
+    data/predictions/ and these tables to tables_dir as <symbol>_h<horizon>_<name>.csv:
+    folds, tuning_<task>, fold_metrics_<task>, results_<task>, clark_west (the H1 test, on the
+    regression models other than the zero forecast) and diebold_mariano (linear vs boosting).
+    models and grids ({task: [model names]}, {model: grid}) restrict the run, e.g. in tests.
+    Nothing is cached: results are always rebuilt from the data passed in.
+    """
+    horizon = cfg["horizon_minutes"]
+    frame = model_frame(data, block_a, block_b, horizon, cfg["target"]["vol_window_minutes"])
+    folds = walk_forward_splits(
+        frame["open_time"], horizon, cfg["walk_forward"]["first_test_month"], cfg["walk_forward"]["embargo_minutes"]
+    )
+    log.info("Ablation: %d usable minutes of %d, %d folds", len(frame), len(data), len(folds))
+    tables = {"folds": fold_table(folds, frame["open_time"])}
+    comparisons = []
+    for task in ("regression", "classification"):
+        predictions, tuning = walk_forward_predictions(
+            frame, folds, block_a, block_b, cfg["target"]["flat_share"], task,
+            models=(models or {}).get(task), grids=grids, seed=cfg["seed"],
+        )
+        save_predictions(predictions, predictions_path(cfg["data_dir"], symbol, start, end, horizon, task))
+        tuning["params"] = tuning["params"].map(lambda params: json.dumps(params, sort_keys=True))
+        metrics = fold_metrics(predictions, task)
+        tables.update({f"tuning_{task}": tuning, f"fold_metrics_{task}": metrics,
+                       f"results_{task}": results_table(metrics)})
+        if task == "regression":
+            nested = [m for m in predictions["model"].unique() if m != "zero"]
+            tables["clark_west"] = clark_west_table(predictions, nested, lags=horizon)
+        comparisons.append(diebold_mariano_table(predictions, task, lags=horizon))
+    tables["diebold_mariano"] = pd.concat(comparisons, ignore_index=True)
+
+    for name, table in tables.items():
+        path = table_path(cfg["tables_dir"], symbol, horizon, name)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        table.to_csv(path, index=False)
+    for row in tables["clark_west"].query("fold == 'all'").itertuples():
+        log.info("H1 (Clark-West, A + B vs A), %s: Holm p = %.4f, supported: %s",
+                 row.model, row.p_holm, row.h1_supported)
+    return tables
