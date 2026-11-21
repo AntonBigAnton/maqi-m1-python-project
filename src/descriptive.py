@@ -4,11 +4,16 @@
 Lead-lag (block E): does the perp move before spot, and how long does the effect last?
 Rows of the panel are consecutive minutes, so shifting a column by k rows moves it by k minutes.
 """
+import warnings
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
 import statsmodels.api as sm
+from statsmodels.tsa.stattools import adfuller, kpss
 
-from src.features import BPS, MS_PER_HOUR
+from src.features import BAR_MS, BPS, MS_PER_HOUR
+from src.schemas import MS_PER_MINUTE
 
 Z_95 = 1.96  # two-sided 95% normal quantile
 PERP_SIGNALS = ["perp_ret", "perp_flow", "basis_bps"]
@@ -145,3 +150,110 @@ def intraday_profile(panel):
         "spot_vol_bps": grouped["spot_vol_bps"].std(),
         "perp_vol_bps": grouped["perp_vol_bps"].std(),
     })
+
+
+# ---------- Block C: returns and volatility (#21) ----------
+
+def save_table(table, name, cfg):
+    """Save a results table as <tables_dir>/<name>.csv (report/tables in config.yaml) and return the path."""
+    folder = Path(cfg["tables_dir"])
+    folder.mkdir(parents=True, exist_ok=True)
+    path = folder / f"{name}.csv"
+    table.to_csv(path)
+    return path
+
+
+def horizon_returns(panel, horizon):
+    """Spot log VWAP returns over `horizon` minutes, one every `horizon` minutes (no overlap)."""
+    log_price = np.log(panel["spot_vwap"])
+    returns = log_price - log_price.shift(horizon)
+    on_grid = (panel["open_time"] // MS_PER_MINUTE) % horizon == 0
+    return returns[on_grid].dropna()
+
+
+def return_samples(panel, horizon):
+    """The two return samples of Figure 4: 1-minute and horizon-minute spot returns, in bps."""
+    return {
+        "1 min": horizon_returns(panel, 1) * BPS,
+        f"{horizon} min": horizon_returns(panel, horizon) * BPS,
+    }
+
+
+def return_moments(samples):
+    """Moments of each return sample: a normal distribution has skew 0 and excess kurtosis 0."""
+    rows = []
+    for label, returns in samples.items():
+        rows.append({
+            "returns": label,
+            "n": len(returns),
+            "mean_bps": returns.mean(),
+            "std_bps": returns.std(),
+            "skew": returns.skew(),
+            "excess_kurtosis": returns.kurt(),
+            "min_bps": returns.min(),
+            "max_bps": returns.max(),
+        })
+    return pd.DataFrame(rows).set_index("returns")
+
+
+def acf_table(panel, max_lag=60):
+    """Autocorrelation of 1-minute spot returns and of their absolute value, lags 1 to max_lag.
+
+    Returns barely autocorrelate (little linear predictability); absolute returns do, for a long
+    time (volatility clustering). band is 1.96 / sqrt(N), the 95% band for independent data.
+    """
+    returns = np.log(panel["spot_vwap"]).diff()
+    n = returns.notna().sum()
+    return pd.DataFrame({
+        "lag": range(1, max_lag + 1),
+        "acf_returns": [returns.autocorr(lag) for lag in range(1, max_lag + 1)],
+        "acf_abs_returns": [returns.abs().autocorr(lag) for lag in range(1, max_lag + 1)],
+        "band": Z_95 / np.sqrt(n),
+    })
+
+
+def five_minute_series(panel):
+    """Spot return, basis and flows on 5-minute bars, for tests too slow on 1-minute data.
+
+    VWAP = quote volume / volume over the 5 minutes. A bar with a missing minute is empty, and so is
+    the return of a bar whose previous bar is empty.
+    """
+    bar = (panel["open_time"] // BAR_MS * BAR_MS).rename("bar_time")
+    full = BAR_MS // MS_PER_MINUTE  # a bar needs all of its minutes
+    columns = ["spot_quote_volume", "spot_volume", "perp_quote_volume", "perp_volume",
+               "spot_signed_volume", "perp_signed_volume"]
+    sums = panel[columns].groupby(bar).sum(min_count=full)
+    spot_vwap = sums["spot_quote_volume"] / sums["spot_volume"]
+    perp_vwap = sums["perp_quote_volume"] / sums["perp_volume"]
+    log_spot = np.log(spot_vwap)
+    return pd.DataFrame({
+        "spot_ret": log_spot - log_spot.reindex(log_spot.index - BAR_MS).to_numpy(),
+        "basis_bps": (perp_vwap / spot_vwap - 1) * BPS,
+        "spot_flow": sums["spot_signed_volume"] / sums["spot_volume"],
+        "perp_flow": sums["perp_signed_volume"] / sums["perp_volume"],
+    })
+
+
+def stationarity_tests(series):
+    """ADF and KPSS tests on each column (statsmodels).
+
+    ADF: the null is a unit root (non-stationary), so a small p-value means stationary.
+    KPSS: the null is stationary, so a small p-value means non-stationary. KPSS p-values are only
+    tabulated between 0.01 and 0.1, so values at those bounds mean "at most" / "at least".
+    """
+    rows = []
+    for name in series.columns:
+        values = series[name].dropna().to_numpy()
+        adf_stat, adf_p, *_ = adfuller(values, autolag="AIC", result_object=False)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")  # KPSS warns when its p-value is at a table bound
+            kpss_stat, kpss_p, *_ = kpss(values, regression="c", nlags="auto")
+        if adf_p < 0.05 and kpss_p > 0.05:
+            verdict = "stationary"
+        elif adf_p >= 0.05 and kpss_p <= 0.05:
+            verdict = "unit root"
+        else:
+            verdict = "mixed"
+        rows.append({"series": name, "n": len(values), "adf_stat": adf_stat, "adf_p": adf_p,
+                     "kpss_stat": kpss_stat, "kpss_p": kpss_p, "verdict": verdict})
+    return pd.DataFrame(rows).set_index("series")

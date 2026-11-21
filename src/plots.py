@@ -2,6 +2,8 @@
 from pathlib import Path
 
 import matplotlib.pyplot as plt
+import numpy as np
+from scipy import stats
 
 # Fixed colours
 SPOT_COLOUR = "#1f77b4"  # blue
@@ -91,7 +93,7 @@ def figure_1(missing, cfg):
     """Figure 1: missing minutes per day (rows) and UTC hour (columns), from descriptive.missing_minutes."""
     apply_style()
     fig, ax = plt.subplots(figsize=(10, 8))
-    
+
     # 0 is always white, even when no minute is missing
     worst = max(1, int(missing.to_numpy().max()))
     image = ax.imshow(missing.to_numpy(), aspect="auto", cmap="Reds", vmin=0, vmax=worst, interpolation="nearest")
@@ -136,3 +138,57 @@ def figure_3(profile, cfg):
     fig.suptitle(f"{cfg['symbol']}: intraday activity")
     fig.tight_layout()
     return save_figure(fig, f"fig03_intraday_{cfg['symbol']}", cfg)
+
+
+def figure_4(samples, cfg):
+    """Figure 4: histograms with a normal overlay (top) and QQ plots (bottom), one column per return sample.
+
+    samples comes from descriptive.return_samples. The histograms show the central 99.8% of returns,
+    so the fat tails are visible in the QQ plots; the moments table uses every return.
+    """
+    apply_style()
+    fig, axes = plt.subplots(2, len(samples), squeeze=False, figsize=(5 * len(samples), 8))
+    for column, (label, returns) in enumerate(samples.items()):
+        hist, qq = axes[0, column], axes[1, column]
+        low, high = returns.quantile([0.001, 0.999])
+        hist.hist(returns, bins=100, range=(low, high), density=True,
+                  color=SPOT_COLOUR, alpha=0.6, label="Spot returns")
+        grid = np.linspace(low, high, 400)
+        hist.plot(grid, stats.norm.pdf(grid, returns.mean(), returns.std()), color="black",
+                  label="Normal, same mean and std")
+        hist.set_title(f"{label} returns")
+        hist.legend(loc="best")
+        label_axes(hist, "Return", "Density", ("bps", "1/bps"))
+        (theoretical, ordered), (slope, intercept, _) = stats.probplot(returns, dist="norm")
+        qq.scatter(theoretical, ordered, s=3, color=SPOT_COLOUR, label="Spot returns")
+        qq.plot(theoretical, slope * theoretical + intercept, color="black", label="Normal")
+        qq.legend(loc="best")
+        label_axes(qq, "Normal quantile", "Return quantile", ("std", "bps"))
+    fig.suptitle(f"{cfg['symbol']}: return distributions")
+    fig.tight_layout()
+    return save_figure(fig, f"fig04_returns_{cfg['symbol']}", cfg)
+
+
+def figure_5(acf, cfg):
+    """Figure 5: autocorrelation of 1-minute returns vs absolute returns, from descriptive.acf_table."""
+    apply_style()
+    fig, (top, bottom) = plt.subplots(2, 1, sharex=True, figsize=(10, 7))
+    for ax, column, title in ((top, "acf_returns", "Returns"), (bottom, "acf_abs_returns", "Absolute returns")):
+        ax.bar(acf["lag"], acf[column], color=SPOT_COLOUR, label=title)
+        ax.fill_between(acf["lag"], -acf["band"], acf["band"], color="grey", alpha=0.3,
+                        label="95% band if independent")
+        ax.axhline(0, color="black", linewidth=0.8)
+        ax.set_title(title)
+        ax.legend(loc="best")
+        label_axes(ax, "Lag", "Autocorrelation", ("min", "–"))
+    top.set_xlabel("")
+        # Lag 1 of returns is large and mechanical (VWAP averaging): zoom on the other lags and label lag 1
+    limit = 1.5 * max(acf.loc[acf["lag"] > 1, "acf_returns"].abs().max(), acf["band"].max())
+    first = acf.loc[acf["lag"] == 1, "acf_returns"].iloc[0]
+    if abs(first) > limit:
+        top.set_ylim(-limit, limit)
+        top.annotate(f"lag 1: {first:.2f} (off scale)", xy=(1, np.sign(first) * limit),
+                     xytext=(5, 0.7 * np.sign(first) * limit), arrowprops={"arrowstyle": "->"})
+    fig.suptitle(f"{cfg['symbol']}: autocorrelation of 1-minute spot returns")
+    fig.tight_layout()
+    return save_figure(fig, f"fig05_acf_{cfg['symbol']}", cfg)
