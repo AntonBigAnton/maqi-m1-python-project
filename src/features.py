@@ -15,6 +15,15 @@ from src.schemas import MS_PER_MINUTE
 ACTIVITY_WINDOW = 60  # activity is compared with its average over the last hour
 MIN_RV_WINDOW = 5     # volatility needs at least 5 returns to mean something
 MS_PER_HOUR = 60 * MS_PER_MINUTE
+BPS = 10_000          # 1 basis point = 0.01%
+METRICS_EVERY_MINUTES = 5  # Binance publishes one metrics reading every 5 minutes
+
+# metrics column behind each block B ratio feature
+RATIO_COLUMNS = {
+    "b_toptrader_ls": "sum_toptrader_long_short_ratio",
+    "b_ls": "count_long_short_ratio",
+    "b_taker_ratio": "sum_taker_long_short_vol_ratio",
+}
 
 
 def feature_lags(horizon, cfg=None):
@@ -80,5 +89,85 @@ def block_a(panel, lags):
     return features
 
 
-# Block A columns for the default config
+def block_b_lags(lags):
+    """Block B uses the middle lags only (drops the shortest and the longest), to stay near 15 features."""
+    if len(lags) <= 2:
+        return lags
+    return lags[1:-1]
+
+
+def block_b_columns(lags):
+    """Names of the block B columns, in the order block_b returns them."""
+    b_lags = block_b_lags(lags)
+    names = []
+    for lag in b_lags:
+        names.append(f"b_flow_{lag}")
+    for lag in b_lags:
+        names.append(f"b_flow_div_{lag}")
+    names.append("b_basis_bps")
+    for lag in b_lags:
+        names.append(f"b_basis_chg_{lag}")
+    for lag in b_lags:
+        names.append(f"b_lead_{lag}")
+    names += ["b_oi_chg", "b_toptrader_ls", "b_ls", "b_taker_ratio", "b_funding_bps"]
+    return names
+
+
+def open_interest_change(panel):
+    """% change in open interest between each metrics reading and the one before it.
+
+    The panel repeats a reading on every minute until the next one, so the change is computed
+    once per reading (when metrics_time changes), then copied to every minute of that reading.
+    """
+    readings = panel[["metrics_time", "sum_open_interest"]].dropna()
+    readings = readings.drop_duplicates(subset="metrics_time")
+    change = (readings["sum_open_interest"] / readings["sum_open_interest"].shift(1) - 1) * 100
+    # If a reading is missing, the previous one is more than 5 minutes back: leave the change empty.
+    minutes_since_previous = readings["metrics_time"].astype(float).diff() / MS_PER_MINUTE
+    change = change.where(minutes_since_previous == METRICS_EVERY_MINUTES)
+    change_by_time = pd.Series(change.to_numpy(), index=readings["metrics_time"].to_numpy())
+    return panel["metrics_time"].map(change_by_time).astype(float)
+
+
+def block_b(panel, lags):
+    """Perp features (block B), one row per panel row."""
+    spot_ret_1min = np.log(panel["spot_vwap"]).diff()
+    perp_ret_1min = np.log(panel["perp_vwap"]).diff()
+    basis = (panel["perp_vwap"] / panel["spot_vwap"] - 1) * BPS
+    b_lags = block_b_lags(lags)
+
+    features = pd.DataFrame(index=panel.index)
+
+    # From the candles: like block A, a window with a missing minute gives NaN.
+    for lag in b_lags:
+        features[f"b_flow_{lag}"] = panel["perp_signed_volume"].rolling(lag).sum() / panel["perp_volume"].rolling(lag).sum()
+    for lag in b_lags:
+        spot_flow = panel["spot_signed_volume"].rolling(lag).sum() / panel["spot_volume"].rolling(lag).sum()
+        features[f"b_flow_div_{lag}"] = features[f"b_flow_{lag}"] - spot_flow
+    features["b_basis_bps"] = basis
+    for lag in b_lags:
+        features[f"b_basis_chg_{lag}"] = basis.diff().rolling(lag).sum()
+    for lag in b_lags:
+        features[f"b_lead_{lag}"] = perp_ret_1min.rolling(lag).sum() - spot_ret_1min.rolling(lag).sum()
+
+    # Move the candle features down one row, so row t only uses minutes up to t - 1.
+    features = features.shift(1)
+
+    # From metrics and funding: the panel only attaches a reading once it is known,
+    # so the value on row t is already known at t and is not shifted.
+    features["b_oi_chg"] = open_interest_change(panel)
+    for name, column in RATIO_COLUMNS.items():
+        features[name] = np.log(panel[column])
+    features["b_funding_bps"] = panel["funding_rate"] * BPS
+    return features
+
+
+def build_features(panel, cfg):
+    """The panel with the block A and block B feature columns added."""
+    lags = feature_lags(cfg["horizon_minutes"], cfg)
+    return pd.concat([panel, block_a(panel, lags), block_b(panel, lags)], axis=1)
+
+
+# Block column names for the default config, for the ablation (A vs A + B).
 BLOCK_A = block_a_columns(load_config()["lags"])
+BLOCK_B = block_b_columns(load_config()["lags"])
