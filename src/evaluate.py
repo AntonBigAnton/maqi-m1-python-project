@@ -3,9 +3,10 @@ from dataclasses import dataclass
 
 import numpy as np
 import pandas as pd
+from sklearn.metrics import balanced_accuracy_score, f1_score, log_loss
 from sklearn.preprocessing import StandardScaler
 
-from src.models import TARGET, VOL_SCALE, classify, fit_flat_threshold
+from src.models import DOWN, FLAT, TARGET, UP, VOL_SCALE, classify, fit_flat_threshold
 from src.schemas import MS_PER_MINUTE
 
 # Walk-forward validation (spec §9). The window is cut into calendar months (UTC). Fold k tests
@@ -135,3 +136,67 @@ def fold_data(frame, train_rows, eval_rows, feature_columns, flat_share, scale=T
         flat_threshold=threshold,
         scaler=scaler,
     )
+
+
+# Per-fold metrics (spec §9). Models save their test-month predictions as one row per
+# (model, feature set, fold, minute), with these columns:
+PREDICTION_KEYS = ["model", "feature_set", "fold", "open_time"]
+REGRESSION_COLUMNS = ["y_true", "y_pred"]  # forward return and its forecast
+CLASS_PROBABILITIES = {DOWN: "p_down", FLAT: "p_flat", UP: "p_up"}
+CLASSIFICATION_COLUMNS = ["class_true", *CLASS_PROBABILITIES.values()]  # label and forecast probabilities
+
+
+def oos_r2(y_true, y_pred):
+    """Out-of-sample R² against the zero-return forecast: 1 - SSE(model) / SSE(predicting 0).
+
+    0 means no better than forecasting no move; negative means worse than doing nothing.
+    """
+    y_true, y_pred = np.asarray(y_true, dtype=float), np.asarray(y_pred, dtype=float)
+    return float(1 - np.sum((y_true - y_pred) ** 2) / np.sum(y_true**2))
+
+
+def classification_scores(class_true, probabilities):
+    """Balanced accuracy, macro F1 and log loss of up / flat / down forecasts.
+
+    probabilities has one column per class in the order down, flat, up. The forecast class is the
+    most likely one. Accuracy alone is not reported: it rewards always predicting the biggest class.
+    """
+    labels = list(CLASS_PROBABILITIES)
+    probabilities = np.asarray(probabilities, dtype=float)
+    predicted = np.asarray(labels)[probabilities.argmax(axis=1)]
+    return {
+        "balanced_accuracy": balanced_accuracy_score(class_true, predicted),
+        "macro_f1": f1_score(class_true, predicted, labels=labels, average="macro", zero_division=0),
+        "log_loss": log_loss(class_true, probabilities, labels=labels),
+    }
+
+
+def check_columns(predictions, columns):
+    if missing := [c for c in [*PREDICTION_KEYS, *columns] if c not in predictions.columns]:
+        raise KeyError(f"Prediction table is missing: {missing}")
+
+
+def fold_metrics(predictions, task):
+    """One row per model, feature set and fold with that fold's test metrics. task is "regression" or "classification"."""
+    if task == "regression":
+        check_columns(predictions, REGRESSION_COLUMNS)
+        score = lambda g: {"oos_r2": oos_r2(g["y_true"], g["y_pred"])}
+    elif task == "classification":
+        check_columns(predictions, CLASSIFICATION_COLUMNS)
+        score = lambda g: classification_scores(g["class_true"], g[list(CLASS_PROBABILITIES.values())])
+    else:
+        raise ValueError(f"task must be 'regression' or 'classification', got {task!r}")
+    records = [
+        {"model": model, "feature_set": feature_set, "fold": fold, "rows": len(group), **score(group)}
+        for (model, feature_set, fold), group in predictions.groupby(["model", "feature_set", "fold"], sort=True)
+    ]
+    return pd.DataFrame(records)
+
+
+def results_table(metrics):
+    """Mean, standard deviation, min and max of each metric across folds, one row per model and feature set."""
+    names = [c for c in metrics.columns if c not in ("model", "feature_set", "fold", "rows")]
+    table = metrics.groupby(["model", "feature_set"], sort=True)[names].agg(["mean", "std", "min", "max"])
+    table.columns = [f"{name}_{stat}" for name, stat in table.columns]
+    table.insert(0, "folds", metrics.groupby(["model", "feature_set"], sort=True)["fold"].nunique())
+    return table.reset_index()
