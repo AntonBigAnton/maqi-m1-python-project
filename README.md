@@ -92,6 +92,22 @@ Row `open_time = t` holds the candles of the minute starting at *t*. Columns:
 - **Same columns on every run.** If an optional dataset was not downloaded, its columns are still there, left empty.
 - **Check.** The run stops if the median gap between perp and spot closes is above 1%, which would mean a join or unit bug (for BTCUSDT in January 2026 it is 4.5 bps).
 
+## Features (block A)
+
+`src/features.py` builds the spot-only features from the panel with `block_a(panel, lags)`. Lags come from `feature_lags(horizon)`: `[1, 5, 15, 60]` for 15 minutes, scaled for other horizons.
+
+| Column | Meaning |
+| --- | --- |
+| `a_ret_{L}` | Spot log VWAP return over the last L minutes |
+| `a_flow_{L}` | Signed volume / volume over the last L minutes (−1 all selling, +1 all buying) |
+| `a_rv_{L}` | Std of 1-min returns over the last L minutes (L ≥ 5) |
+| `a_count_rel`, `a_vol_rel` | Trade count and volume vs their 60-minute average |
+| `a_hour_sin`, `a_hour_cos` | Hour of day (UTC) on a circle |
+
+- **No look-ahead.** A feature on row t only uses minutes up to t − 1, since minute t's candle is only complete at t + 1.
+- **No filling.** Any window containing a missing minute gives NaN.
+- `BLOCK_A` lists the block A column names, for the A vs A + B comparison.
+
 ## Configuration
 
 Every run parameter (symbol, horizon, sample window, lags, seed, paths) lives in `config.yaml`. Code reads it with `src.config.load_config()`, so nothing in `src/` hardcodes the coin, the horizon or the dates.
