@@ -60,3 +60,17 @@ def test_figures_1_to_3_write_their_files(tmp_path):
         "fig01_missing_minutes_TESTUSDT.png", "fig02_volume_share_TESTUSDT.png", "fig03_intraday_TESTUSDT.png",
     ]
     assert all(p.exists() for p in paths)
+
+
+def test_figures_4_and_5_write_their_files(tmp_path):
+    from src import descriptive
+    from tests.test_descriptive import market_panel
+
+    cfg = {"figures_dir": tmp_path, "symbol": "TESTUSDT"}
+    panel = market_panel()
+    paths = [
+        plots.figure_4(descriptive.return_samples(panel, 15), cfg),
+        plots.figure_5(descriptive.acf_table(panel, max_lag=10), cfg),
+    ]
+    assert [p.name for p in paths] == ["fig04_returns_TESTUSDT.png", "fig05_acf_TESTUSDT.png"]
+    assert all(p.exists() for p in paths)

@@ -4,8 +4,9 @@ import pandas as pd
 import pytest
 
 from src.descriptive import (
-    cross_correlation, granger, granger_pair, intraday_profile, lead_lag_signals, lead_lag_table,
-    missing_minutes, tracking_stats, volume_share,
+    acf_table, cross_correlation, five_minute_series, granger, granger_pair, horizon_returns, intraday_profile,
+    lead_lag_signals, lead_lag_table, missing_minutes, return_moments, save_table, stationarity_tests,
+    tracking_stats, volume_share,
 )
 
 MINUTE = 60_000
@@ -134,3 +135,67 @@ def test_intraday_profile_has_one_row_per_hour():
     profile = intraday_profile(market_panel())
     assert list(profile.index) == list(range(24))
     assert (profile["spot_vol_bps"] > 0).all()
+
+
+# ---------- Block C: returns and volatility (#21) ----------
+
+def test_horizon_returns_do_not_overlap():
+    panel = market_panel(days=1)
+    panel["spot_vwap"] = np.exp(np.arange(len(panel)) * 1e-4)  # log price rises 1e-4 per minute
+    returns = horizon_returns(panel, 15)
+    assert np.allclose(returns, 15e-4)
+    assert len(returns) == 1440 // 15 - 1  # one every 15 minutes; the first has no earlier price
+
+
+def test_moments_of_normal_returns_are_close_to_zero():
+    rng = np.random.default_rng(0)
+    samples = {"1 min": pd.Series(rng.normal(0, 10, 200_000))}
+    moments = return_moments(samples).loc["1 min"]
+    assert moments["std_bps"] == pytest.approx(10, rel=0.01)
+    assert abs(moments["skew"]) < 0.05
+    assert abs(moments["excess_kurtosis"]) < 0.1
+
+
+def test_acf_finds_ar1_and_volatility_clustering():
+    rng = np.random.default_rng(0)
+    returns = np.zeros(20_000)
+    for t in range(1, len(returns)):
+        returns[t] = 0.5 * returns[t - 1] + rng.normal()
+    panel = pd.DataFrame({"spot_vwap": np.exp(np.cumsum(returns) * 1e-3)})
+    acf = acf_table(panel, max_lag=5)
+    assert acf.loc[0, "acf_returns"] == pytest.approx(0.5, abs=0.03)
+    assert acf.loc[1, "acf_returns"] == pytest.approx(0.25, abs=0.03)
+    assert np.allclose(acf["band"], 1.96 / np.sqrt(len(returns) - 1))
+
+
+def test_five_minute_series_from_sums():
+    panel = market_panel(days=1)
+    panel["spot_signed_volume"] = 0.5   # half of spot volume is net buying
+    series = five_minute_series(panel)
+    assert len(series) == 1440 // 5
+    assert np.allclose(series["basis_bps"], 5.0)
+    assert np.allclose(series["spot_flow"], 0.5)
+    assert np.isnan(series["spot_ret"].iloc[0])  # no bar before the first
+
+
+def test_five_minute_bar_with_a_missing_minute_is_empty():
+    panel = market_panel(days=1)
+    panel.loc[12, ["spot_quote_volume", "spot_volume"]] = np.nan  # minute 12 is in the bar 10-14
+    series = five_minute_series(panel)
+    assert np.isnan(series["basis_bps"].iloc[2])
+    assert series["spot_ret"].iloc[2:4].isna().all()  # into and out of the empty bar
+
+
+def test_stationarity_tests_tell_noise_from_random_walk():
+    rng = np.random.default_rng(0)
+    noise = rng.normal(size=3000)
+    series = pd.DataFrame({"noise": noise, "random_walk": np.cumsum(noise)})
+    table = stationarity_tests(series)
+    assert table.loc["noise", "verdict"] == "stationary"
+    assert table.loc["random_walk", "verdict"] == "unit root"
+
+
+def test_save_table_writes_a_csv(tmp_path):
+    path = save_table(pd.DataFrame({"a": [1, 2]}), "example", {"tables_dir": tmp_path})
+    assert path == tmp_path / "example.csv"
+    assert path.exists()

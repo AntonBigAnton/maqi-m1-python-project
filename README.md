@@ -160,6 +160,18 @@ Does the perp move before spot (H2)?
 | `volume_share(panel)` | Daily perp share of traded value (quote volume) | Figure 2 |
 | `intraday_profile(panel)` | Traded value per minute and std of 1-min returns by UTC hour, spot and perp | Figure 3 |
 
+### Returns and volatility (block C)
+
+| Function | What it gives | Output |
+| --- | --- | --- |
+| `return_samples(panel, horizon)` and `return_moments(samples)` | 1-min and horizon-min spot returns (non-overlapping), with mean, std, skew, excess kurtosis, min and max | Figure 4, table |
+| `acf_table(panel, max_lag=60)` | Autocorrelation of 1-min returns and of absolute returns | Figure 5 |
+| `five_minute_series(panel)` and `stationarity_tests(series)` | ADF and KPSS tests on 5-minute spot return, basis and flows (statsmodels) | Table in `report/tables` |
+
+- **Reading the tests.** ADF's null is a unit root, so a small p-value means stationary; KPSS's null is stationary, so a small p-value means non-stationary. KPSS p-values are only tabulated between 0.01 and 0.1.
+- **Why 5 minutes.** The tests on 260,000 one-minute values are slow; 5-minute bars keep the same behaviour with 52,000 values.
+- `save_table(table, name, cfg)` writes a table as `report/tables/<name>.csv`.
+
 ## Configuration
 
 Every run parameter (symbol, horizon, sample window, lags, seed, paths) lives in `config.yaml`. Code reads it with `src.config.load_config()`, so nothing in `src/` hardcodes the coin, the horizon or the dates.
@@ -177,6 +189,7 @@ Every figure uses the shared style in `src/plots.py`, so they all look the same 
 | `save_figure(fig, name, cfg)` | Saves the figure as `<figures_dir>/<name>.png` (`report/figures` in `config.yaml`), creates the folder if needed, then closes the figure |
 | `figure_8(lead_lag, cfg)` | Figure 8 ★: cross-correlation of each perp signal with future spot returns (from `lead_lag_table`), with the ±1.96 / √N band; saved as `fig08_lead_lag_<symbol>.png` |
 | `figure_1`, `figure_2`, `figure_3` | Missing minutes heatmap (day × hour), perp share of traded value over time, intraday volume and volatility; saved as `fig01_…`, `fig02_…`, `fig03_…` |
+| `figure_4`, `figure_5` | Return histograms with a normal overlay and QQ plots; ACF of returns vs absolute returns; saved as `fig04_…`, `fig05_…` |
 
 ## Contributing
 
