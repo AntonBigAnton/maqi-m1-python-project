@@ -13,7 +13,7 @@ from statsmodels.stats.multitest import multipletests
 
 from src.models import (
     CLASSIFICATION_MODELS, DEFAULT_GRIDS, DOWN, FLAT, REGRESSION_MODELS, TARGET, UP, VOL_SCALE,
-    classify, feature_sets, fit_flat_threshold, fit_predict, model_frame,
+    classify, feature_sets, fit_flat_threshold, fit_model, fit_predict, model_frame,
 )
 from src.schemas import MS_PER_MINUTE
 
@@ -379,6 +379,75 @@ def save_predictions(predictions, path):
     return path
 
 
+# Interpretation (spec §8, Figure 12): which perp features drive the gain. Both outputs are
+# descriptive, not causal.
+
+
+def coefficient_table(frame, block_a, block_b, lags, rows=None):
+    """OLS coefficients of the A + B model with Newey-West standard errors and 95% intervals.
+
+    Features are standardised on the same rows, so a coefficient is the change in the forecast
+    return for a one-standard-deviation move of the feature. In-sample, on every row of the
+    model_frame by default (rows restricts it): this is inference on the coefficients, not a
+    forecast evaluation. lags should be at least the horizon (overlapping labels).
+    """
+    columns = feature_sets(block_a, block_b)["A+B"]
+    data = frame if rows is None else frame.iloc[rows]
+    X = pd.DataFrame(StandardScaler().fit_transform(data[columns]), index=data.index, columns=columns)
+    table = hac_coefficients(X, data[TARGET], lags)
+    table.insert(1, "block", table["feature"].map({**{c: "A" for c in block_a}, **{c: "B" for c in block_b}}))
+    return table
+
+
+def tuned_params(tuning, model, feature_set, fold):
+    """Hyperparameters chosen for one model, feature set and fold (a dict, or its JSON string in saved tables)."""
+    match = tuning[(tuning["model"] == model) & (tuning["feature_set"] == feature_set) & (tuning["fold"] == fold)]
+    if len(match) != 1:
+        raise ValueError(f"No tuned hyperparameters for {model!r}, {feature_set!r}, fold {fold}")
+    params = match["params"].iloc[0]
+    return json.loads(params) if isinstance(params, str) else params
+
+
+def permutation_importance_table(frame, folds, block_a, block_b, flat_share, tuning, task="regression",
+                                 model="boosting", features=None, repeats=5, seed=0):
+    """Permutation importance of features (block B by default) in the A + B model, per fold and pooled.
+
+    For each fold the model is refitted on the training months with the hyperparameters chosen in
+    the walk-forward run (tuning), then each feature is shuffled in the test month, repeats times,
+    and the drop in the test score is recorded: out-of-sample R² for regression, log loss (as an
+    increase) for classification. A feature the model does not use scores about 0. Shuffling also
+    breaks the feature's autocorrelation and its correlation with other features, so correlated
+    features share their importance.
+    """
+    columns = feature_sets(block_a, block_b)["A+B"]
+    features = list(block_b if features is None else features)
+    if missing := [f for f in features if f not in columns]:
+        raise ValueError(f"Not features of A + B: {missing}")
+    rng = np.random.default_rng(seed)
+    records = []
+    for fold in folds:
+        data = fold_data(frame, fold.train, fold.test, columns, flat_share)
+        predict = fit_model(model, tuned_params(tuning, model, "A+B", fold.number), data, task, seed)
+        base = tuning_score(task, data, predict(data.X_eval))
+        for feature in features:
+            drops = []
+            for _ in range(repeats):
+                shuffled = data.X_eval.copy()
+                shuffled[feature] = rng.permutation(shuffled[feature].to_numpy())
+                drops.append(base - tuning_score(task, data, predict(shuffled)))
+            records.append({"fold": fold.number, "feature": feature, "importance": float(np.mean(drops))})
+    per_fold = pd.DataFrame(records, columns=["fold", "feature", "importance"])
+    pooled = per_fold.groupby("feature", sort=False)["importance"].agg(["mean", "std", "min", "max"])
+    pooled = pooled.reset_index().rename(columns={"mean": "importance", "std": "importance_std",
+                                                  "min": "importance_min", "max": "importance_max"})
+    pooled["fold"] = "all"
+    table = pd.concat([per_fold, pooled], ignore_index=True)
+    table.insert(0, "model", model)
+    table.insert(1, "task", task)
+    table["block"] = table["feature"].map({**{c: "A" for c in block_a}, **{c: "B" for c in block_b}})
+    return table
+
+
 # Full ablation run: one call from the panel with features to every modelling table of the report.
 
 # Non-nested comparisons tested with Diebold-Mariano: each linear model against boosting.
@@ -435,7 +504,9 @@ def run_ablation(cfg, data, block_a, block_b, symbol, start, end, models=None, g
     A and A + B over the walk-forward folds, for both tasks. Predictions go to
     data/predictions/ and these tables to tables_dir as <symbol>_h<horizon>_<name>.csv:
     folds, tuning_<task>, fold_metrics_<task>, results_<task>, clark_west (the H1 test, on the
-    regression models other than the zero forecast) and diebold_mariano (linear vs boosting).
+    regression models other than the zero forecast), diebold_mariano (linear vs boosting),
+    coefficients (HAC coefficients of the A + B model, in-sample) and permutation_importance
+    (block B features in the A + B boosting regression; empty if boosting was not run).
     models and grids ({task: [model names]}, {model: grid}) restrict the run, e.g. in tests.
     Nothing is cached: results are always rebuilt from the data passed in.
     """
@@ -453,6 +524,12 @@ def run_ablation(cfg, data, block_a, block_b, symbol, start, end, models=None, g
             models=(models or {}).get(task), grids=grids, seed=cfg["seed"],
         )
         save_predictions(predictions, predictions_path(cfg["data_dir"], symbol, start, end, horizon, task))
+        if task == "regression":
+            # without boosting in the run there is nothing to permute: no folds give an empty table
+            boosting_folds = folds if "boosting" in set(predictions["model"]) else []
+            tables["permutation_importance"] = permutation_importance_table(
+                frame, boosting_folds, block_a, block_b, cfg["target"]["flat_share"], tuning, seed=cfg["seed"]
+            )
         tuning["params"] = tuning["params"].map(lambda params: json.dumps(params, sort_keys=True))
         metrics = fold_metrics(predictions, task)
         tables.update({f"tuning_{task}": tuning, f"fold_metrics_{task}": metrics,
@@ -462,6 +539,7 @@ def run_ablation(cfg, data, block_a, block_b, symbol, start, end, models=None, g
             tables["clark_west"] = clark_west_table(predictions, nested, lags=horizon)
         comparisons.append(diebold_mariano_table(predictions, task, lags=horizon))
     tables["diebold_mariano"] = pd.concat(comparisons, ignore_index=True)
+    tables["coefficients"] = coefficient_table(frame, block_a, block_b, lags=horizon)
 
     for name, table in tables.items():
         path = table_path(cfg["tables_dir"], symbol, horizon, name)

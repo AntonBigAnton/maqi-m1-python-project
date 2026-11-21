@@ -16,8 +16,9 @@ H = 15
 MODELS = {"regression": ["zero", "ridge", "boosting"], "classification": ["majority", "logit", "boosting"]}
 GRIDS = {"ridge": [{"penalty": 1e-3}], "logit": [{"C": 1.0}],
          "boosting": [{"max_depth": 2, "learning_rate": 0.1, "max_iter": 10}]}  # small grids keep the test fast
-TABLES = ["folds", "tuning_regression", "fold_metrics_regression", "results_regression", "clark_west",
-          "tuning_classification", "fold_metrics_classification", "results_classification", "diebold_mariano"]
+TABLES = ["folds", "permutation_importance", "tuning_regression", "fold_metrics_regression", "results_regression",
+          "clark_west", "tuning_classification", "fold_metrics_classification", "results_classification",
+          "diebold_mariano", "coefficients"]
 
 
 def synthetic_panel(seed=0):
@@ -84,12 +85,20 @@ def test_diebold_mariano_compares_linear_models_with_boosting(run):
     assert dm["p_value"].between(0, 1).all()
 
 
+def test_figure_12_tables_cover_the_perp_features(run):
+    _, tables = run
+    pooled = tables["permutation_importance"].query("fold == 'all'")
+    assert pooled["feature"].tolist() == ["b1"] and (pooled["model"] == "boosting").all()
+    assert tables["coefficients"]["feature"].tolist() == ["const", "a1", "b1"]
+
+
 def test_another_symbol_does_not_overwrite_the_tables(run):
     cfg, _ = run
     first = table_path(cfg["tables_dir"], "SYM", H, "results_regression").read_text()
     run_ablation(cfg, synthetic_panel(seed=1), ["a1"], ["b1"], "OTHER", "s", "e",
                  models={"regression": ["zero"], "classification": ["majority"]}, grids=GRIDS)
     assert table_path(cfg["tables_dir"], "OTHER", H, "results_regression").exists()
+    assert pd.read_csv(table_path(cfg["tables_dir"], "OTHER", H, "permutation_importance")).empty  # no boosting
     assert table_path(cfg["tables_dir"], "SYM", H, "results_regression").read_text() == first
 
 
