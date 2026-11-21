@@ -327,6 +327,10 @@ Every figure uses the shared style in `src/plots.py`, so they all look the same 
 | `figure_4`, `figure_5` | Return histograms with a normal overlay and QQ plots; ACF of returns vs absolute returns; saved as `fig04_…`, `fig05_…` |
 | `figure_6`, `figure_7`, `figure_10` | Basis with deleveraging clusters marked; funding and open interest on aligned panels; feature correlation heatmap; saved as `fig06_…`, `fig07_…`, `fig10_…` |
 | `figure_9(study, placebo, cfg, suffix="")` | Figure 9 ★: event study by side, spot return and basis change since the end of the event bar, with bootstrap bands and the placebo path; saved as `fig09_event_study_<symbol><suffix>.png` |
+| `figure_11(clark_west, cfg, folds=None)` | Figure 11 ★ (H1): out-of-sample R² gain of A + B over A for each model, one row per walk-forward fold (labelled by test month) and a pooled row. Each dot carries its one-sided Clark-West p-value; the pooled row carries the Holm-adjusted one that answers H1. Filled markers are significant at 5%. Saved as `fig11_forecast_gain_<symbol>_h<horizon>.png` |
+| `figure_12(coefficients, importance, cfg)` | Figure 12 ★ (H1): one row per block B feature, largest coefficient on top. Left: in-sample OLS coefficient of the standardised feature with its 95% Newey-West interval and Holm p-value. Right: permutation importance of ridge and boosting, mean over folds, with the range across folds. Saved as `fig12_perp_features_<symbol>_h<horizon>.png` |
+| `figures_11_12(cfg, symbol=None)` | Draws figures 11 and 12 from the tables `run_ablation` saved in `tables_dir` |
+| `MODEL_STYLES` | Fixed colour and marker of each model in the results figures (ridge green ●, lasso purple ■, boosting brown ▲), away from the spot, perp and cluster colours |
 
 ## Contributing
 
