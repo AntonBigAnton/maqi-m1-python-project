@@ -82,8 +82,24 @@ def test_diebold_mariano_sign_symmetry_and_identical_forecasts():
     assert stat < 0 and p < 0.01
     stat_swapped, p_swapped = diebold_mariano(loss_bad, loss_good, H)
     assert stat_swapped == pytest.approx(-stat) and p_swapped == pytest.approx(p)
-    with pytest.raises(ValueError, match="identical"):
-        diebold_mariano(loss_good, loss_good, H)
+    assert diebold_mariano(loss_good, loss_good, H) == (0.0, 1.0)  # identical forecasts: no evidence either way
+    with pytest.raises(ValueError, match="non-zero constant"):
+        diebold_mariano(np.full(100, 2.0), np.ones(100), H)
+
+
+def test_clark_west_with_identical_forecasts_is_neutral():
+    """A lasso can drop every feature of both sets: same forecasts, so no evidence for H1."""
+    y = np.random.default_rng(10).normal(size=100)
+    assert clark_west(y, np.full(100, 0.1), np.full(100, 0.1), lags=H) == (0.0, 0.5)
+
+
+def test_tiny_loss_differences_are_not_mistaken_for_constants():
+    """Returns are ~1e-3 and A vs A + B forecasts can differ by ~1e-7: CW terms are ~1e-10 but still tested."""
+    rng = np.random.default_rng(11)
+    b = rng.normal(0, 1e-7, 5000)  # what block B adds to the forecast
+    y = rng.normal(0, 1e-3, 5000) + 1000 * b
+    stat, p = clark_west(y, np.zeros(5000), b, lags=H)
+    assert stat > 3 and p < 0.01
 
 
 def test_hac_coefficients_recover_the_effect_with_wider_errors_than_ols():

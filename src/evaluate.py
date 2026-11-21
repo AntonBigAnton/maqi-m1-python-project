@@ -210,12 +210,19 @@ def results_table(metrics):
 
 
 def hac_mean_test(series, lags):
-    """t-statistic of the mean of series and its two-sided normal p-value, with a Newey-West standard error."""
+    """t-statistic of the mean of series and its two-sided normal p-value, with a Newey-West standard error.
+
+    A series of exact zeros (identical forecasts, e.g. a lasso that dropped every feature of both
+    feature sets) is no evidence either way: t = 0, p = 1. Exact comparisons only, since loss
+    differences of minute returns are of order 1e-7 and a tolerance would erase them.
+    """
     series = np.asarray(series, dtype=float)
     if np.isnan(series).any():
         raise ValueError("Series contains missing values")
-    if np.allclose(series, series[0]):
-        raise ValueError("Series is constant: the two forecasts are identical")
+    if (series == 0).all():
+        return 0.0, 1.0
+    if np.ptp(series) == 0:
+        raise ValueError("Series is a non-zero constant: its standard error is zero")
     fit = sm.OLS(series, np.ones(len(series))).fit(cov_type="HAC", cov_kwds={"maxlags": lags})
     return float(fit.tvalues[0]), float(fit.pvalues[0])
 
