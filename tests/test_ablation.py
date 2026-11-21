@@ -92,6 +92,17 @@ def test_figure_12_tables_cover_the_perp_features(run):
     assert tables["coefficients"]["feature"].tolist() == ["const", "a1", "b1"]
 
 
+def test_duplicate_block_b_features_are_dropped_before_the_models(tmp_path, caplog):
+    panel = synthetic_panel()
+    panel["b_flow_div_5"] = panel["b1"] - panel["a1"]  # an exact duplicate, named like features.py does
+    cfg = load_config(data_dir=tmp_path / "data", tables_dir=tmp_path / "tables")
+    with caplog.at_level("INFO"):
+        tables = run_ablation(cfg, panel, ["a1"], ["b1", "b_flow_div_5"], "SYM", "s", "e",
+                              models={"regression": ["ridge"], "classification": ["majority"]}, grids=GRIDS)
+    assert "b_flow_div_5" in caplog.text and "Dropped" in caplog.text
+    assert tables["coefficients"]["feature"].tolist() == ["const", "a1", "b1"]  # identified without the duplicate
+
+
 def test_another_symbol_does_not_overwrite_the_tables(run):
     cfg, _ = run
     first = table_path(cfg["tables_dir"], "SYM", H, "results_regression").read_text()
