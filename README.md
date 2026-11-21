@@ -223,6 +223,12 @@ Forecasts are made every minute for a 15-minute horizon, so consecutive errors o
 | `report/tables/<symbol>_h<horizon>_results_<task>.csv` | Mean and spread of the metrics across folds |
 | `report/tables/<symbol>_h<horizon>_clark_west.csv` | **H1**: Clark-West of A + B vs A for every regression model except the zero forecast, per fold and pooled, with Holm |
 | `report/tables/<symbol>_h<horizon>_diebold_mariano.csv` | Diebold-Mariano of each linear model vs boosting, per feature set |
+| `report/tables/<symbol>_h<horizon>_coefficients.csv` | Figure 12: OLS coefficients of the A + B model on standardised features, with Newey-West standard errors and 95% intervals |
+| `report/tables/<symbol>_h<horizon>_permutation_importance.csv` | Figure 12: R² lost when each block-B feature is shuffled in the test month, in the A + B boosting regression, per fold and pooled |
+
+**Reading the figure 12 tables.** Both are descriptive, not causal:
+- **Coefficients** are fitted in-sample on every usable minute. A coefficient is the change in the forecast 15-minute return for a one-standard-deviation move in the feature.
+- **Permutation importance** refits boosting on each fold's training months with its tuned hyperparameters. It then measures how much test-month R² drops when one feature is shuffled. A feature the model doesn't use scores about 0. Correlated features share their importance, because shuffling one leaves the information in the others.
 
 Tables are named by symbol and horizon, so a smoke test on another symbol never overwrites them. Nothing is cached: every call rebuilds the results from the data passed in. On the real BTCUSDT panel it takes about 2 minutes.
 

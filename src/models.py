@@ -152,11 +152,11 @@ def class_probabilities(estimator, X):
     return proba
 
 
-def fit_predict(model, params, data, task, seed=0):
-    """Fit one model on data.X_train and forecast data.X_eval.
+def fit_model(model, params, data, task, seed=0):
+    """Fit one model on data.X_train and return its forecast function: X -> forecasts.
 
-    data is a FoldData (evaluate.fold_data). Regression models return the forecast returns;
-    classification models return an (n, 3) array of down / flat / up probabilities.
+    data is a FoldData (evaluate.fold_data). Regression forecasts are returns; classification
+    forecasts are an (n, 3) array of down / flat / up probabilities.
     zero: forecasts no move (the random walk). majority: the training class shares, so its
     forecast class is the most common one. ridge / lasso: penalised linear regressions.
     logit: multinomial logistic regression. boosting: histogram gradient boosting, a regressor
@@ -165,28 +165,30 @@ def fit_predict(model, params, data, task, seed=0):
     """
     if model not in (REGRESSION_MODELS if task == "regression" else CLASSIFICATION_MODELS):
         raise ValueError(f"Unknown model {model!r} for task {task!r}")
-    n_eval = len(data.X_eval)
     if model == "zero":
-        return np.zeros(n_eval)
+        return lambda X: np.zeros(len(X))
     if model == "majority":
         shares = pd.Series(data.class_train).value_counts(normalize=True).reindex(CLASSES, fill_value=0.0)
-        return np.tile(shares.to_numpy(), (n_eval, 1))
+        return lambda X: np.tile(shares.to_numpy(), (len(X), 1))
     if model == "ridge":
-        estimator = Ridge(alpha=params["penalty"] * len(data.X_train))
-        return estimator.fit(data.X_train, data.y_train).predict(data.X_eval)
+        return Ridge(alpha=params["penalty"] * len(data.X_train)).fit(data.X_train, data.y_train).predict
     if model == "lasso":
         estimator = Lasso(alpha=params["penalty"] * float(np.std(data.y_train)), max_iter=10_000)
-        return estimator.fit(data.X_train, data.y_train).predict(data.X_eval)
+        return estimator.fit(data.X_train, data.y_train).predict
     if model == "logit":
         estimator = LogisticRegression(C=params["C"], max_iter=2_000).fit(data.X_train, data.class_train)
-        return class_probabilities(estimator, data.X_eval)
+        return lambda X: class_probabilities(estimator, X)
     if model == "boosting":
         # params (from the grid) can also override the fixed settings, e.g. max_iter
         settings = {"max_iter": BOOSTING_TREES, "min_samples_leaf": BOOSTING_MIN_LEAF, "early_stopping": False,
                     "random_state": seed, **params}
         if task == "regression":
-            estimator = HistGradientBoostingRegressor(**settings)
-            return estimator.fit(data.X_train, data.y_train).predict(data.X_eval)
+            return HistGradientBoostingRegressor(**settings).fit(data.X_train, data.y_train).predict
         estimator = HistGradientBoostingClassifier(**settings).fit(data.X_train, data.class_train)
-        return class_probabilities(estimator, data.X_eval)
+        return lambda X: class_probabilities(estimator, X)
     raise ValueError(f"No fitting code for model {model!r}")
+
+
+def fit_predict(model, params, data, task, seed=0):
+    """Fit one model on data.X_train and forecast data.X_eval (see fit_model)."""
+    return fit_model(model, params, data, task, seed)(data.X_eval)
