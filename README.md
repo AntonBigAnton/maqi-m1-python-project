@@ -134,9 +134,13 @@ Binance does not publish liquidations for USD-M perps, so they are inferred. A 5
 - **Cut-offs.** Full sample for the descriptive analysis; `"past"` (earlier bars only) for the model features by default; or fixed values from `deleveraging_thresholds` on training data.
 - **Timing.** A bar's open interest change runs to the reading stamped at its end, as in the spec's table. It is only used once that reading is known, 10 minutes after the bar starts.
 
-## Descriptive analysis: lead-lag
+## Descriptive analysis
 
-`src/descriptive.py` computes the tables behind the descriptive figures; `src/plots.py` draws them. Does the perp move before spot (H2)?
+`src/descriptive.py` computes the tables behind the descriptive figures (spec section 7); `src/plots.py` draws them.
+
+### Lead-lag (block E)
+
+Does the perp move before spot (H2)?
 
 | Function | What it gives | Reading |
 | --- | --- | --- |
@@ -146,6 +150,15 @@ Binance does not publish liquidations for USD-M perps, so they are inferred. A 5
 - **Confidence band.** Figure 8 shades ±1.96 / √N, the 95% band of zero correlation for independent data. Returns and flows are autocorrelated, so the real band is wider.
 - **Significance vs size.** With about 260,000 minutes almost any effect is significant, so report `delta_r2`, not only the p-value.
 - **No filling.** A missing minute leaves its returns empty, and pairs with an empty value are skipped.
+
+### Data quality and market structure (blocks A–B)
+
+| Function | What it gives | Figure |
+| --- | --- | --- |
+| `missing_minutes(panel)` | Missing minutes (spot or perp) per day and UTC hour | Figure 1 |
+| `tracking_stats(panel)` | Gap between perp and spot closes in bps: mean, median, 99th percentile, max | Table (the check in `panel.py`, as numbers) |
+| `volume_share(panel)` | Daily perp share of traded value (quote volume) | Figure 2 |
+| `intraday_profile(panel)` | Traded value per minute and std of 1-min returns by UTC hour, spot and perp | Figure 3 |
 
 ## Configuration
 
@@ -163,6 +176,7 @@ Every figure uses the shared style in `src/plots.py`, so they all look the same 
 | `label_axes(ax, x, y, unit)` | Labels both axes with their units: `unit=("min", "bps")` gives `Time [min]` and `Basis [bps]`. Raises an error if a unit is missing |
 | `save_figure(fig, name, cfg)` | Saves the figure as `<figures_dir>/<name>.png` (`report/figures` in `config.yaml`), creates the folder if needed, then closes the figure |
 | `figure_8(lead_lag, cfg)` | Figure 8 ★: cross-correlation of each perp signal with future spot returns (from `lead_lag_table`), with the ±1.96 / √N band; saved as `fig08_lead_lag_<symbol>.png` |
+| `figure_1`, `figure_2`, `figure_3` | Missing minutes heatmap (day × hour), perp share of traded value over time, intraday volume and volatility; saved as `fig01_…`, `fig02_…`, `fig03_…` |
 
 ## Contributing
 
