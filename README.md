@@ -190,6 +190,53 @@ Does the perp move before spot (H2)?
 
 - **Half-life.** With basis_t = a + φ · basis_{t−1}, a deviation halves in ln(0.5) / ln(φ) minutes.
 
+## Targets and walk-forward validation
+
+Targets are in `src/models.py` and the splitter is in `src/evaluate.py` (spec sections 5 and 9). The feature columns are passed in as two lists, `block_a` (spot only) and `block_b` (perp), so this code does not depend on how `src/features.py` builds them.
+
+### Targets
+
+| Target | Definition |
+| --- | --- |
+| Regression `y` | Forward spot log return over the horizon *h*: log VWAP of minute *t + h* minus log VWAP of minute *t* |
+| Classification | Up / flat / down: flat if \|y\| ≤ *k* × `vol_scale`, otherwise the sign of `y` |
+
+- **Volatility scale.** `vol_scale` is the standard deviation of 1-minute spot VWAP returns over the previous `vol_window_minutes` (60), times √*h*. It uses only minutes before *t*, so the class threshold is known when the forecast is made, and it widens in volatile periods instead of calling every move "up" or "down".
+- **Threshold fitted on training data only.** *k* is chosen on each fold's training rows so that a share `flat_share` (one third) of them is flat, then applied unchanged to the test rows.
+- **No filling.** A missing VWAP at *t* or *t + h* (no trade, gap, end of the window) leaves the target missing. The future price is looked up by time, not by row position.
+- **Same rows for both models.** `model_frame` drops any minute that is missing the target, the scale or any feature of block A or B. The baseline (A) and the full model (A + B) are then scored on the same minutes, so any difference between them comes from block B.
+
+### Walk-forward splits
+
+The window is cut into calendar months (UTC). Each fold tests on one month and trains on every month before it:
+
+| Fold | Fit (tuning) | Tune | Train (final fit) | Test |
+| --- | --- | --- | --- | --- |
+| 1 | month 1 | month 2 | months 1–2 | month 3 |
+| 2 | months 1–2 | month 3 | months 1–3 | month 4 |
+| 3 | months 1–3 | month 4 | months 1–4 | month 5 |
+| 4 | months 1–4 | month 5 | months 1–5 | month 6 |
+
+- **Tuning.** Hyperparameters are chosen by fitting on the *fit* months and scoring on the *tune* month (the last training month). The model is then refitted on all training months and scored once on the test month. The test month is never used to choose anything.
+- **Fitted on training rows only.** `fold_data` fits the feature scaler (mean 0, standard deviation 1) and the class threshold on the rows it trains on, then applies them unchanged to the rows it scores. Tree models skip the scaler with `scale=False`.
+- **Embargo.** A label at *t* uses prices up to minute *t + h*. So the last `embargo_minutes` before each scored period are dropped from the rows fitted on it: before the test month, and before the tune month. The default is the horizon *h*, and anything shorter is rejected.
+- **Cut by time.** Folds are defined by timestamps, so they stay correct after `model_frame` drops rows.
+- **Run length.** At least `first_test_month` months of data are needed, so a `--quick` (one-month) run cannot produce folds.
+
+```python
+from src.evaluate import fold_data, walk_forward_splits
+from src.models import feature_sets, model_frame
+
+frame = model_frame(data, BLOCK_A, BLOCK_B, cfg["horizon_minutes"], cfg["target"]["vol_window_minutes"])
+for fold in walk_forward_splits(frame["open_time"], cfg["horizon_minutes"], cfg["walk_forward"]["first_test_month"],
+                                cfg["walk_forward"]["embargo_minutes"]):
+    for name, columns in feature_sets(BLOCK_A, BLOCK_B).items():
+        tune = fold_data(frame, fold.fit, fold.tune, columns, cfg["target"]["flat_share"])
+        test = fold_data(frame, fold.train, fold.test, columns, cfg["target"]["flat_share"])
+```
+
+`fold_table(folds, frame["open_time"])` gives the size and date range of every set, for the report.
+
 ## Configuration
 
 Every run parameter (symbol, horizon, sample window, lags, seed, paths) lives in `config.yaml`. Code reads it with `src.config.load_config()`, so nothing in `src/` hardcodes the coin, the horizon or the dates.
