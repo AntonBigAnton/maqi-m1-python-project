@@ -322,7 +322,7 @@ def tuning_score(task, data, forecast):
     return -log_loss(data.class_eval, forecast, labels=list(CLASS_PROBABILITIES))
 
 
-def walk_forward_predictions(frame, folds, block_a, block_b, flat_share, task, models=None, grids=None):
+def walk_forward_predictions(frame, folds, block_a, block_b, flat_share, task, models=None, grids=None, seed=0):
     """Test-month predictions of every model x feature set x fold, and the hyperparameters chosen.
 
     frame is a models.model_frame and folds come from walk_forward_splits on its open_time. For
@@ -330,7 +330,7 @@ def walk_forward_predictions(frame, folds, block_a, block_b, flat_share, task, m
     tune month (R² for regression, log loss for classes); the best is refitted on all training
     months and forecasts the test month. Scaler and class threshold are fitted on the rows each
     model is trained on (fold_data). Returns (predictions, tuning), predictions in the
-    PREDICTION_KEYS + REGRESSION_COLUMNS / CLASSIFICATION_COLUMNS format.
+    PREDICTION_KEYS + REGRESSION_COLUMNS / CLASSIFICATION_COLUMNS format. seed is the config seed.
     """
     if task not in ("regression", "classification"):
         raise ValueError(f"task must be 'regression' or 'classification', got {task!r}")
@@ -343,11 +343,15 @@ def walk_forward_predictions(frame, folds, block_a, block_b, flat_share, task, m
             test_data = fold_data(frame, fold.train, fold.test, columns, flat_share)
             keys = {"feature_set": feature_set, "fold": fold.number}
             for model in models:
-                scores = [tuning_score(task, tune_data, fit_predict(model, params, tune_data)) for params in grids[model]]
+                scores = [
+                    tuning_score(task, tune_data, fit_predict(model, params, tune_data, task, seed))
+                    for params in grids[model]
+                ]
                 best = grids[model][int(np.argmax(scores))]
                 tuning.append({"model": model, **keys, "params": best, "tune_score": max(scores)})
-                forecast = fit_predict(model, best, test_data)
-                rows = pd.DataFrame({"model": model, **keys, "open_time": frame["open_time"].iloc[fold.test].to_numpy()})
+                forecast = fit_predict(model, best, test_data, task, seed)
+                open_time = frame["open_time"].iloc[fold.test].to_numpy()
+                rows = pd.DataFrame({"model": model, **keys, "open_time": open_time})
                 if task == "regression":
                     rows["y_true"], rows["y_pred"] = test_data.y_eval.to_numpy(), forecast
                 else:

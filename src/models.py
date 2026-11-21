@@ -1,6 +1,7 @@
 # ablation fits (block A vs A + B): targets, class threshold, feature sets
 import numpy as np
 import pandas as pd
+from sklearn.ensemble import HistGradientBoostingClassifier, HistGradientBoostingRegressor
 from sklearn.linear_model import Lasso, LogisticRegression, Ridge
 
 from src.schemas import MS_PER_MINUTE
@@ -120,31 +121,50 @@ def model_frame(data, block_a, block_b, horizon_minutes, vol_window_minutes):
     return frame.sort_values("open_time").reset_index(drop=True)
 
 
-# Level 0-1 models (spec §8). Each is fitted on block A and on A + B with the same folds.
+# Level 0-2 models (spec §8). Each is fitted on block A and on A + B with the same folds.
 # Penalties are scale-free so one grid suits any symbol or horizon: features are standardised
 # (fold_data), the ridge penalty is a multiple of the number of training rows, and the lasso
 # penalty a multiple of the standard deviation of the training target.
-REGRESSION_MODELS = ("zero", "ridge", "lasso")
-CLASSIFICATION_MODELS = ("majority", "logit")
+# Boosting (level 2) tunes tree depth and learning rate. Its other settings are fixed for noisy
+# minute data: large leaves (BOOSTING_MIN_LEAF rows) and a fixed number of trees, without early
+# stopping, so a fit only depends on its training rows and the seed. The simplest grid point is
+# close to a constant forecast: if tuning picks it, boosting found nothing to use.
+REGRESSION_MODELS = ("zero", "ridge", "lasso", "boosting")
+CLASSIFICATION_MODELS = ("majority", "logit", "boosting")
+BOOSTING_TREES = 200
+BOOSTING_MIN_LEAF = 500
 DEFAULT_GRIDS = {
     "zero": [{}],
     "majority": [{}],
     "ridge": [{"penalty": p} for p in (1e-3, 1e-2, 1e-1, 1.0, 10.0, 100.0)],
     "lasso": [{"penalty": p} for p in (1e-4, 1e-3, 3e-3, 1e-2, 3e-2, 1e-1)],
     "logit": [{"C": c} for c in (1e-3, 1e-2, 1e-1, 1.0)],
+    # from almost constant (stumps, learning rate 0.003 over 200 trees) to moderately flexible
+    "boosting": [{"max_depth": d, "learning_rate": r} for d in (1, 2, 3) for r in (0.003, 0.03)],
 }
 CLASSES = [DOWN, FLAT, UP]  # column order of class probabilities
 
 
-def fit_predict(model, params, data):
+def class_probabilities(estimator, X):
+    """Down / flat / up probabilities in CLASSES order; a class absent from the training rows gets 0."""
+    proba = np.zeros((len(X), len(CLASSES)))
+    proba[:, [CLASSES.index(c) for c in estimator.classes_]] = estimator.predict_proba(X)
+    return proba
+
+
+def fit_predict(model, params, data, task, seed=0):
     """Fit one model on data.X_train and forecast data.X_eval.
 
     data is a FoldData (evaluate.fold_data). Regression models return the forecast returns;
     classification models return an (n, 3) array of down / flat / up probabilities.
     zero: forecasts no move (the random walk). majority: the training class shares, so its
     forecast class is the most common one. ridge / lasso: penalised linear regressions.
-    logit: multinomial logistic regression.
+    logit: multinomial logistic regression. boosting: histogram gradient boosting, a regressor
+    on returns or a classifier on the classes depending on task. Trees ignore the feature scaling.
+    seed fixes boosting's only random step (the sample used to bin features on large data).
     """
+    if model not in (REGRESSION_MODELS if task == "regression" else CLASSIFICATION_MODELS):
+        raise ValueError(f"Unknown model {model!r} for task {task!r}")
     n_eval = len(data.X_eval)
     if model == "zero":
         return np.zeros(n_eval)
@@ -159,8 +179,15 @@ def fit_predict(model, params, data):
         return estimator.fit(data.X_train, data.y_train).predict(data.X_eval)
     if model == "logit":
         estimator = LogisticRegression(C=params["C"], max_iter=2_000).fit(data.X_train, data.class_train)
-        proba = np.zeros((n_eval, len(CLASSES)))
-        # a class absent from the training rows gets probability 0
-        proba[:, [CLASSES.index(c) for c in estimator.classes_]] = estimator.predict_proba(data.X_eval)
-        return proba
-    raise ValueError(f"Unknown model {model!r}")
+        return class_probabilities(estimator, data.X_eval)
+    if model == "boosting":
+        settings = dict(
+            max_iter=BOOSTING_TREES, min_samples_leaf=BOOSTING_MIN_LEAF, early_stopping=False,
+            random_state=seed, **params,
+        )
+        if task == "regression":
+            estimator = HistGradientBoostingRegressor(**settings)
+            return estimator.fit(data.X_train, data.y_train).predict(data.X_eval)
+        estimator = HistGradientBoostingClassifier(**settings).fit(data.X_train, data.class_train)
+        return class_probabilities(estimator, data.X_eval)
+    raise ValueError(f"No fitting code for model {model!r}")

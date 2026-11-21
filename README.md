@@ -246,7 +246,7 @@ Models save their test-month predictions with one row per model, feature set (`A
 | Regression | Out-of-sample R² = 1 − SSE(model) / SSE(zero forecast) | 0 = no better than forecasting no move; negative = worse |
 | Classification | Balanced accuracy, macro F1, log loss | Accuracy alone is not used: when "flat" dominates, always predicting it scores well |
 
-### Models (levels 0–1)
+### Models (levels 0–2)
 
 Each model is fitted on block A and on A + B, on the same folds and rows (spec section 8):
 
@@ -256,10 +256,13 @@ Each model is fitted on block A and on A + B, on the same folds and rows (spec s
 | Regression | `ridge`, `lasso` | Penalty (scale-free: ridge as a multiple of the training rows, lasso of the target's standard deviation), chosen by out-of-sample R² |
 | Classification | `majority`: the training class shares | none |
 | Classification | `logit`: multinomial logistic regression | `C`, chosen by log loss |
+| Both | `boosting`: histogram gradient boosting (regressor or classifier) | Tree depth and learning rate, chosen by R² or log loss |
 
 `walk_forward_predictions(frame, folds, BLOCK_A, BLOCK_B, flat_share, task)` runs every model × feature set × fold. For each fold it scores every grid value by fitting on the fit months and scoring on the tune month, then refits the best on all training months and forecasts the test month. It returns the test-month predictions in the format above, plus the chosen hyperparameters. `save_predictions` writes them to `data/predictions/<symbol>_<start>_<end>_h<horizon>_<task>.parquet`.
 
-On the real six-month BTCUSDT panel, a full run (both tasks, all models, both feature sets, four folds) takes about 10 seconds.
+Boosting checks for non-linear effects and interactions that the linear models cannot capture. Its other settings are fixed for noisy minute data: 200 trees, leaves of at least 500 rows, and no early stopping, so a fit depends only on its training rows and `seed` from `config.yaml`. The simplest grid point (depth 1, learning rate 0.003) is close to a constant forecast: if tuning picks it, boosting found nothing to use.
+
+On the real six-month BTCUSDT panel, a full run (both tasks, all models, both feature sets, four folds) takes about 2 minutes on an Apple-silicon laptop. Boosting takes almost all of that; the level 0–1 models take about 10 seconds.
 
 ### Significance tests
 

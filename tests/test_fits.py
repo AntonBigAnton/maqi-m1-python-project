@@ -34,12 +34,14 @@ def folds(frame):
 
 @pytest.fixture(scope="module")
 def regression(frame, folds):
-    return walk_forward_predictions(frame, folds, ["a1"], ["b1"], FLAT_SHARE, "regression")
+    return walk_forward_predictions(frame, folds, ["a1"], ["b1"], FLAT_SHARE, "regression",
+                                    models=["zero", "ridge", "lasso"])
 
 
 @pytest.fixture(scope="module")
 def classification(frame, folds):
-    return walk_forward_predictions(frame, folds, ["a1"], ["b1"], FLAT_SHARE, "classification")
+    return walk_forward_predictions(frame, folds, ["a1"], ["b1"], FLAT_SHARE, "classification",
+                                    models=["majority", "logit"])
 
 
 def small_fold(beta=0.5, n=2000, seed=1):
@@ -51,8 +53,8 @@ def small_fold(beta=0.5, n=2000, seed=1):
 
 def test_benchmarks_forecast_no_move_and_the_training_class_shares():
     data = small_fold()
-    assert (fit_predict("zero", {}, data) == 0).all()
-    proba = fit_predict("majority", {}, data)
+    assert (fit_predict("zero", {}, data, "regression") == 0).all()
+    proba = fit_predict("majority", {}, data, "classification")
     shares = pd.Series(data.class_train).value_counts(normalize=True)
     assert proba.shape == (len(data.X_eval), 3)
     assert proba[0] == pytest.approx([shares[DOWN], shares[FLAT], shares[UP]])
@@ -61,15 +63,15 @@ def test_benchmarks_forecast_no_move_and_the_training_class_shares():
 def test_ridge_and_lasso_recover_the_slope_and_shrink_with_the_penalty():
     data = small_fold()
     slope = lambda forecast: np.polyfit(data.X_eval["x"], forecast, 1)[0] / data.scaler.scale_[0]
-    assert slope(fit_predict("ridge", {"penalty": 1e-6}, data)) == pytest.approx(0.5, abs=0.05)
-    assert slope(fit_predict("lasso", {"penalty": 1e-6}, data)) == pytest.approx(0.5, abs=0.05)
-    assert abs(slope(fit_predict("ridge", {"penalty": 100.0}, data))) < 0.05
-    assert np.ptp(fit_predict("lasso", {"penalty": 10.0}, data)) == 0  # every coefficient set to zero
+    assert slope(fit_predict("ridge", {"penalty": 1e-6}, data, "regression")) == pytest.approx(0.5, abs=0.05)
+    assert slope(fit_predict("lasso", {"penalty": 1e-6}, data, "regression")) == pytest.approx(0.5, abs=0.05)
+    assert abs(slope(fit_predict("ridge", {"penalty": 100.0}, data, "regression"))) < 0.05
+    assert np.ptp(fit_predict("lasso", {"penalty": 10.0}, data, "regression")) == 0  # every coefficient set to zero
 
 
 def test_logit_probabilities_follow_the_signal():
     data = small_fold()
-    proba = fit_predict("logit", {"C": 1.0}, data)
+    proba = fit_predict("logit", {"C": 1.0}, data, "classification")
     assert np.allclose(proba.sum(axis=1), 1)
     high = data.X_eval["x"].to_numpy() > 1
     assert proba[high, 2].mean() > 0.6  # high x: mostly "up"
@@ -78,7 +80,9 @@ def test_logit_probabilities_follow_the_signal():
 
 def test_unknown_model_is_rejected():
     with pytest.raises(ValueError, match="Unknown model"):
-        fit_predict("svm", {}, small_fold())
+        fit_predict("svm", {}, small_fold(), "regression")
+    with pytest.raises(ValueError, match="Unknown model 'logit' for task 'regression'"):
+        fit_predict("logit", {"C": 1.0}, small_fold(), "regression")
 
 
 def test_every_model_feature_set_and_fold_forecasts_its_test_month(regression, frame, folds):
