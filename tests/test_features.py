@@ -1,4 +1,4 @@
-# block A features: hand-checked values, no look-ahead, NaN after a gap, nothing hardcoded
+# block A and B features: hand-checked values, no look-ahead, NaN after a gap, nothing hardcoded
 import ast
 import math
 
@@ -7,7 +7,9 @@ import pandas as pd
 import pytest
 
 from src.config import REPO_ROOT, load_config
-from src.features import BLOCK_A, block_a, block_a_columns, feature_lags
+from src.features import (
+    BLOCK_A, BLOCK_B, block_a, block_a_columns, block_b, block_b_columns, build_features, feature_lags,
+)
 
 JAN_1_6AM_MS = 1767247200000  # 2026-01-01 06:00 UTC
 MINUTE = 60_000
@@ -111,3 +113,121 @@ def test_features_hardcode_no_symbol_or_horizon():
     assert "BTC" not in source
     numbers = [node.value for node in ast.walk(ast.parse(source)) if isinstance(node, ast.Constant)]
     assert 15 not in numbers
+
+
+# ---------- Block B ----------
+
+B_LAGS = [1, 5, 15]  # block B keeps the middle lag only: 5
+
+
+def perp_toy_panel():
+    """toy_panel plus perp candles, metrics and funding, with values easy to check by hand."""
+    panel = toy_panel()
+    # perp trades 5 bps above spot, 10 bps on row 3
+    premium = [1.0005] * 10
+    premium[3] = 1.001
+    panel["perp_vwap"] = panel["spot_vwap"] * premium
+    panel["perp_signed_volume"] = 6.0
+    panel["perp_volume"] = 20.0
+    # two metrics readings: rows 0-4 and rows 5-9; open interest goes from 1000 to 1010
+    panel["metrics_time"] = pd.array([JAN_1_6AM_MS] * 5 + [JAN_1_6AM_MS + 5 * MINUTE] * 5, dtype="Int64")
+    panel["sum_open_interest"] = [1000.0] * 5 + [1010.0] * 5
+    panel["sum_toptrader_long_short_ratio"] = 2.0
+    panel["count_long_short_ratio"] = 0.5
+    panel["sum_taker_long_short_vol_ratio"] = 1.0
+    panel["funding_rate"] = 0.0001
+    return panel
+
+
+def test_block_b_hand_checked_values():
+    out = block_b(perp_toy_panel(), B_LAGS)
+    assert out.loc[1, "b_basis_bps"] == pytest.approx(5.0)    # row 0
+    assert out.loc[4, "b_basis_bps"] == pytest.approx(10.0)   # row 3
+    assert out.loc[9, "b_basis_chg_5"] == pytest.approx(5.0 - 10.0)  # row 8 minus row 3
+    assert out.loc[5, "b_flow_5"] == pytest.approx(30 / 100)
+    assert out.loc[5, "b_flow_div_5"] == pytest.approx(30 / 100 - (2 - 4 + 6 + 0 + 4) / 50)
+    assert out.loc[6, "b_lead_5"] == pytest.approx(0.0)       # same premium at rows 0 and 5
+    assert out.loc[9, "b_lead_5"] == pytest.approx(math.log(1.0005) - math.log(1.001))  # rows 3..8
+    assert out.loc[0, "b_toptrader_ls"] == pytest.approx(math.log(2.0))
+    assert out.loc[0, "b_ls"] == pytest.approx(math.log(0.5))
+    assert out.loc[0, "b_taker_ratio"] == pytest.approx(0.0)
+    assert out.loc[0, "b_funding_bps"] == pytest.approx(1.0)
+
+
+def test_open_interest_change_only_between_readings():
+    out = block_b(perp_toy_panel(), B_LAGS)
+    assert out.loc[0:4, "b_oi_chg"].isna().all()  # first reading: nothing to compare with
+    assert np.allclose(out.loc[5:9, "b_oi_chg"], 1.0)  # 1000 -> 1010 is +1%, on every minute of the reading
+
+
+def test_open_interest_change_is_empty_after_a_missing_reading():
+    panel = perp_toy_panel()
+    panel.loc[5:9, "metrics_time"] = JAN_1_6AM_MS + 10 * MINUTE  # the reading at +5 min never came
+    out = block_b(panel, B_LAGS)
+    assert out.loc[5:9, "b_oi_chg"].isna().all()
+
+
+def test_block_b_columns_and_size():
+    out = block_b(perp_toy_panel(), B_LAGS)
+    assert list(out.columns) == block_b_columns(B_LAGS)
+    assert BLOCK_B == block_b_columns(load_config()["lags"])
+    assert len(BLOCK_A) <= 15 and len(BLOCK_B) <= 15
+    assert not set(BLOCK_A) & set(BLOCK_B)
+
+
+def random_panel(rows, seed):
+    """A panel with every column block A and B read, filled with random positive values."""
+    rng = np.random.default_rng(seed)
+    panel = pd.DataFrame({"open_time": [JAN_1_6AM_MS + i * MINUTE for i in range(rows)]})
+    for column in [
+        "spot_vwap", "spot_volume", "perp_vwap", "perp_volume", "sum_open_interest",
+        "sum_toptrader_long_short_ratio", "count_long_short_ratio", "sum_taker_long_short_vol_ratio",
+    ]:
+        panel[column] = rng.uniform(1, 2, rows)
+    panel["spot_signed_volume"] = rng.uniform(-1, 1, rows)
+    panel["perp_signed_volume"] = rng.uniform(-1, 1, rows)
+    panel["spot_count"] = pd.array(rng.integers(1, 10, rows), dtype="Int64")
+    panel["metrics_time"] = pd.array([JAN_1_6AM_MS + (i // 5) * 5 * MINUTE for i in range(rows)], dtype="Int64") # a new metrics reading every 5 minutes
+    panel["funding_rate"] = rng.uniform(-0.001, 0.001, rows)
+    panel["spot_missing"] = False
+    return panel
+
+
+# Candle columns of row t are only complete at t + 1, so they are changed from row t on.
+# Metrics and funding on row t are already known at t, so they are changed after row t only.
+CANDLE_COLUMNS = [
+    "spot_vwap", "spot_volume", "spot_signed_volume", "spot_count",
+    "perp_vwap", "perp_volume", "perp_signed_volume",
+]
+KNOWN_AT_T_COLUMNS = [
+    "open_time", "metrics_time", "sum_open_interest", "sum_toptrader_long_short_ratio",
+    "count_long_short_ratio", "sum_taker_long_short_vol_ratio", "funding_rate",
+]
+
+
+def randomise(panel, column, first_row, rng):
+    """Replace a column with random values from first_row to the end."""
+    rows = len(panel) - first_row
+    if column in ("open_time", "metrics_time", "spot_count"):
+        panel.loc[first_row:, column] = rng.integers(1, 10**9, rows)
+    else:
+        panel.loc[first_row:, column] = rng.uniform(1, 2, rows)
+
+
+@pytest.mark.parametrize("t", [30, 70, 100])
+def test_changing_data_after_t_never_changes_features_up_to_t(t):
+    """Issue #19: features up to row t are identical whatever happens later, for both blocks."""
+    cfg = load_config()
+    panel = random_panel(rows=120, seed=0)
+    changed = panel.copy()
+    rng = np.random.default_rng(1)
+    for column in CANDLE_COLUMNS:
+        randomise(changed, column, t, rng)
+    for column in KNOWN_AT_T_COLUMNS:
+        randomise(changed, column, t + 1, rng)
+
+    columns = BLOCK_A + BLOCK_B
+    before = build_features(panel, cfg)[columns]
+    after = build_features(changed, cfg)[columns]
+    pd.testing.assert_frame_equal(before.loc[:t], after.loc[:t])
+    assert not before.loc[t + 1:].equals(after.loc[t + 1:])  # the change did reach later rows
