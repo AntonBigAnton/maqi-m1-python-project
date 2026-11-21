@@ -12,7 +12,9 @@ import pandas as pd
 import statsmodels.api as sm
 from statsmodels.tsa.stattools import adfuller, kpss
 
-from src.features import BAR_MS, BPS, MS_PER_HOUR
+from src.features import (
+    BAR_MS, BPS, DELEV_OI_QUANTILE, MS_PER_HOUR, cluster_events, deleveraging_events,
+)
 from src.schemas import MS_PER_MINUTE
 
 Z_95 = 1.96  # two-sided 95% normal quantile
@@ -257,3 +259,72 @@ def stationarity_tests(series):
         rows.append({"series": name, "n": len(values), "adf_stat": adf_stat, "adf_p": adf_p,
                      "kpss_stat": kpss_stat, "kpss_p": kpss_p, "verdict": verdict})
     return pd.DataFrame(rows).set_index("series")
+
+
+# ---------- Block D: perp-specific signals (#22) ----------
+
+def basis_over_time(panel):
+    """The 1-minute basis in bps, (perp VWAP / spot VWAP - 1) x 10,000, indexed by UTC time."""
+    time = pd.to_datetime(panel["open_time"], unit="ms", utc=True)
+    basis = (panel["perp_vwap"] / panel["spot_vwap"] - 1) * BPS
+    return pd.Series(basis.to_numpy(), index=time, name="basis_bps")
+
+
+def basis_half_life(panel):
+    """AR(1) fit of the 1-minute basis: basis_t = a + phi x basis_{t-1} + noise.
+
+    The half-life ln(0.5) / ln(phi) is how many minutes a deviation from the mean basis takes to
+    halve. It is only defined for 0 < phi < 1 (a basis that reverts to its mean).
+    """
+    basis = (panel["perp_vwap"] / panel["spot_vwap"] - 1) * BPS
+    pairs = pd.DataFrame({"now": basis, "before": basis.shift(1)}).dropna()
+    before = pairs["before"] - pairs["before"].mean()
+    now = pairs["now"] - pairs["now"].mean()
+    # OLS slope with an intercept; undefined if the basis never moves
+    phi = (before * now).sum() / (before ** 2).sum() if (before ** 2).sum() > 0 else np.nan
+    half_life = np.log(0.5) / np.log(phi) if 0 < phi < 1 else np.nan
+    return pd.DataFrame([{"n": len(pairs), "mean_bps": basis.mean(), "phi": phi, "half_life_min": half_life}])
+
+
+def deleveraging_clusters(panel, oi_q=DELEV_OI_QUANTILE):
+    """Clusters of potential liquidations on the full sample (descriptive use), from features.py."""
+    return cluster_events(deleveraging_events(panel, oi_q))
+
+
+def leverage_series(panel):
+    """Funding rate at each settlement (bps) and open interest at each metrics reading (billion USDT)."""
+    funding = panel[["funding_time", "funding_rate"]].dropna().drop_duplicates("funding_time")
+    readings = panel[["metrics_time", "sum_open_interest_value"]].dropna().drop_duplicates("metrics_time")
+    return {
+        "funding_bps": pd.Series(
+            (funding["funding_rate"] * BPS).to_numpy(),
+            index=pd.to_datetime(funding["funding_time"].astype("int64"), unit="ms", utc=True),
+        ),
+        "open_interest_bn": pd.Series(
+            (readings["sum_open_interest_value"] / 1e9).to_numpy(),
+            index=pd.to_datetime(readings["metrics_time"].astype("int64"), unit="ms", utc=True),
+        ),
+    }
+
+
+def flow_correlation(panel, lags):
+    """Correlation of spot and perp signed flow share over the same window, for each window L."""
+    rows = []
+    for lag in lags:
+        spot = panel["spot_signed_volume"].rolling(lag).sum() / panel["spot_volume"].rolling(lag).sum()
+        perp = panel["perp_signed_volume"].rolling(lag).sum() / panel["perp_volume"].rolling(lag).sum()
+        pair = pd.DataFrame({"spot": spot, "perp": perp}).dropna()
+        rows.append({"window_min": lag, "corr": pair["spot"].corr(pair["perp"]), "n": len(pair)})
+    return pd.DataFrame(rows)
+
+
+def redundant_pairs(corr, threshold=0.9):
+    """Pairs of features whose |correlation| is at least threshold: candidates to drop (for Arya)."""
+    rows = []
+    names = list(corr.columns)
+    for i, first in enumerate(names):
+        for second in names[i + 1:]:
+            value = corr.loc[first, second]
+            if abs(value) >= threshold:
+                rows.append({"feature_1": first, "feature_2": second, "corr": value})
+    return pd.DataFrame(rows, columns=["feature_1", "feature_2", "corr"])
