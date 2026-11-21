@@ -3,8 +3,10 @@ from dataclasses import dataclass
 
 import numpy as np
 import pandas as pd
+import statsmodels.api as sm
 from sklearn.metrics import balanced_accuracy_score, f1_score, log_loss
 from sklearn.preprocessing import StandardScaler
+from statsmodels.stats.multitest import multipletests
 
 from src.models import DOWN, FLAT, TARGET, UP, VOL_SCALE, classify, fit_flat_threshold
 from src.schemas import MS_PER_MINUTE
@@ -200,3 +202,99 @@ def results_table(metrics):
     table.columns = [f"{name}_{stat}" for name, stat in table.columns]
     table.insert(0, "folds", metrics.groupby(["model", "feature_set"], sort=True)["fold"].nunique())
     return table.reset_index()
+
+
+# Significance tests (spec §9). Forecasts are issued every minute for a 15-minute horizon, so
+# consecutive errors overlap and are autocorrelated: every test uses Newey-West (HAC) standard
+# errors with at least h lags.
+
+
+def hac_mean_test(series, lags):
+    """t-statistic of the mean of series and its two-sided normal p-value, with a Newey-West standard error."""
+    series = np.asarray(series, dtype=float)
+    if np.isnan(series).any():
+        raise ValueError("Series contains missing values")
+    if np.allclose(series, series[0]):
+        raise ValueError("Series is constant: the two forecasts are identical")
+    fit = sm.OLS(series, np.ones(len(series))).fit(cov_type="HAC", cov_kwds={"maxlags": lags})
+    return float(fit.tvalues[0]), float(fit.pvalues[0])
+
+
+def clark_west(y_true, pred_small, pred_big, lags):
+    """Clark-West test that the bigger of two nested models (A + B) forecasts better than the smaller (A).
+
+    f_t = e_small² - (e_big² - (pred_small - pred_big)²). The correction term removes the noise the
+    big model adds by estimating extra coefficients that are zero under the null. One-sided:
+    a small p-value means block B improves the forecast. Returns (statistic, p-value).
+    """
+    y_true, pred_small, pred_big = (np.asarray(a, dtype=float) for a in (y_true, pred_small, pred_big))
+    f = (y_true - pred_small) ** 2 - ((y_true - pred_big) ** 2 - (pred_small - pred_big) ** 2)
+    t, p_two_sided = hac_mean_test(f, lags)
+    return t, p_two_sided / 2 if t > 0 else 1 - p_two_sided / 2
+
+
+def diebold_mariano(loss_1, loss_2, lags):
+    """Diebold-Mariano test of equal forecast accuracy for non-nested models (e.g. linear vs boosting).
+
+    Takes per-row losses (squared errors, or log losses for the classes). Two-sided: a negative
+    statistic means model 1 has the lower loss. Returns (statistic, p-value).
+    """
+    return hac_mean_test(np.asarray(loss_1, dtype=float) - np.asarray(loss_2, dtype=float), lags)
+
+
+def hac_coefficients(X, y, lags):
+    """OLS coefficients with Newey-West standard errors, for the level-1 coefficient table.
+
+    Fit it on standardised training features so coefficients are comparable across features.
+    """
+    fit = sm.OLS(np.asarray(y, dtype=float), sm.add_constant(X, has_constant="add")).fit(
+        cov_type="HAC", cov_kwds={"maxlags": lags}
+    )
+    ci = fit.conf_int()
+    return pd.DataFrame(
+        {"coef": fit.params, "hac_se": fit.bse, "t": fit.tvalues, "p_value": fit.pvalues,
+         "ci_low": ci.iloc[:, 0], "ci_high": ci.iloc[:, 1]}
+    ).rename_axis("feature").reset_index()
+
+
+def holm(p_values):
+    """Holm-adjusted p-values (family-wise error control across model levels), in the input order."""
+    return multipletests(np.asarray(p_values, dtype=float), method="holm")[1]
+
+
+def paired_forecasts(predictions, model, small="A", big="A+B"):
+    """One row per fold and minute with the true return and both feature sets' forecasts of one model."""
+    check_columns(predictions, REGRESSION_COLUMNS)
+    rows = predictions[predictions["model"] == model]
+    pairs = rows[rows["feature_set"] == small].merge(
+        rows[rows["feature_set"] == big], on=["fold", "open_time"], suffixes=("_small", "_big"), validate="one_to_one"
+    )
+    if len(pairs) == 0:
+        raise ValueError(f"No minute has both {small} and {big} forecasts for model {model!r}")
+    if not np.allclose(pairs["y_true_small"], pairs["y_true_big"]):
+        raise ValueError("The two feature sets were scored on different targets")
+    return pairs.rename(columns={"y_true_small": "y_true"}).sort_values(["fold", "open_time"]).reset_index(drop=True)
+
+
+def clark_west_table(predictions, models, lags, alpha=0.05):
+    """The H1 answer: Clark-West test of A + B against A for each model, per fold and pooled over folds.
+
+    Pooled p-values are Holm-adjusted across models; H1 is supported for a model if its adjusted
+    p-value is below alpha. Per-fold rows (for Figure 11) are not adjusted.
+    """
+    records = []
+    for model in models:
+        pairs = paired_forecasts(predictions, model)
+        groups = [(fold, group) for fold, group in pairs.groupby("fold")] + [("all", pairs)]
+        for fold, group in groups:
+            stat, p = clark_west(group["y_true"], group["y_pred_small"], group["y_pred_big"], lags)
+            gain = oos_r2(group["y_true"], group["y_pred_big"]) - oos_r2(group["y_true"], group["y_pred_small"])
+            records.append({"model": model, "fold": fold, "rows": len(group), "r2_gain": gain,
+                            "cw_stat": stat, "p_value": p})
+    table = pd.DataFrame(records)
+    pooled = table["fold"] == "all"
+    table["p_holm"] = np.nan
+    table.loc[pooled, "p_holm"] = holm(table.loc[pooled, "p_value"])
+    table["h1_supported"] = pd.Series(pd.NA, index=table.index, dtype="boolean")
+    table.loc[pooled, "h1_supported"] = table.loc[pooled, "p_holm"] < alpha
+    return table
