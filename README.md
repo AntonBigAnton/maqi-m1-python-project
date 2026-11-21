@@ -179,6 +179,19 @@ Models save their test-month predictions with one row per model, feature set (`A
 | Regression | Out-of-sample R² = 1 − SSE(model) / SSE(zero forecast) | 0 = no better than forecasting no move; negative = worse |
 | Classification | Balanced accuracy, macro F1, log loss | Accuracy alone is not used: when "flat" dominates, always predicting it scores well |
 
+### Significance tests
+
+Forecasts are made every minute for a 15-minute horizon, so consecutive errors overlap. Every test therefore uses Newey-West (HAC) standard errors, with the horizon as the number of lags.
+
+| Function | Test | Used for |
+| --- | --- | --- |
+| `clark_west` | Clark-West, one-sided | **H1**: does A + B forecast better than A? A is nested in A + B, so the test corrects for the noise added by estimating B's coefficients, which are zero if H1 is false |
+| `diebold_mariano` | Diebold-Mariano, two-sided | Non-nested comparisons, such as linear vs boosting, on squared errors or log losses |
+| `hac_coefficients` | OLS with Newey-West standard errors | Level-1 coefficient table: which perp features matter |
+| `holm` | Holm correction | Adjusting the pooled Clark-West p-values across model levels |
+
+`clark_west_table(predictions, models, lags)` gives the H1 answer: one Clark-West test per model and fold (for Figure 11), plus one pooled over all test months. The pooled p-values are Holm-adjusted across models, and `h1_supported` is true when the adjusted p-value is below 5%.
+
 ## Configuration
 
 Every run parameter (symbol, horizon, sample window, lags, seed, paths) lives in `config.yaml`. Code reads it with `src.config.load_config()`, so nothing in `src/` hardcodes the coin, the horizon or the dates.
