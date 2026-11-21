@@ -190,6 +190,123 @@ Does the perp move before spot (H2)?
 
 - **Half-life.** With basis_t = a + φ · basis_{t−1}, a deviation halves in ln(0.5) / ln(φ) minutes.
 
+## Targets and walk-forward validation
+
+Targets are in `src/models.py` and the splitter is in `src/evaluate.py` (spec sections 5 and 9). The feature columns are passed in as two lists, `block_a` (spot only) and `block_b` (perp), so this code does not depend on how `src/features.py` builds them.
+
+### Targets
+
+| Target | Definition |
+| --- | --- |
+| Regression `y` | Forward spot log return over the horizon *h*: log VWAP of minute *t + h* minus log VWAP of minute *t* |
+| Classification | Up / flat / down: flat if \|y\| ≤ *k* × `vol_scale`, otherwise the sign of `y` |
+
+- **Volatility scale.** `vol_scale` is the standard deviation of 1-minute spot VWAP returns over the previous `vol_window_minutes` (60), times √*h*. It uses only minutes before *t*, so the class threshold is known when the forecast is made, and it widens in volatile periods instead of calling every move "up" or "down".
+- **Threshold fitted on training data only.** *k* is chosen on each fold's training rows so that a share `flat_share` (one third) of them is flat, then applied unchanged to the test rows.
+- **No filling.** A missing VWAP at *t* or *t + h* (no trade, gap, end of the window) leaves the target missing. The future price is looked up by time, not by row position.
+- **Same rows for both models.** `model_frame` drops any minute that is missing the target, the scale or any feature of block A or B. The baseline (A) and the full model (A + B) are then scored on the same minutes, so any difference between them comes from block B.
+- **Duplicate block B features are dropped.** Two kinds of block B features in `src/features.py` repeat information already in A + B, at every look-back window *L*. `run_ablation` drops these four before fitting (with the default lags) and keeps every other block B feature:
+  - `b_flow_div_L` equals `b_flow_L` − `a_flow_L` exactly, and both flows are already features.
+  - `b_basis_chg_L` is the change in the perp/spot gap, which is the perp-minus-spot return `b_lead_L` in bps (correlation 1.000000 on the BTCUSDT panel).
+
+  Kept, they would make the coefficient table unidentifiable and split permutation importance between twins. `coefficient_table` refuses features that duplicate others (R² above 0.9999 on the other features) and names them.
+
+### Walk-forward splits
+
+The window is cut into calendar months (UTC). Each fold tests on one month and trains on every month before it:
+
+| Fold | Fit (tuning) | Tune | Train (final fit) | Test |
+| --- | --- | --- | --- | --- |
+| 1 | month 1 | month 2 | months 1–2 | month 3 |
+| 2 | months 1–2 | month 3 | months 1–3 | month 4 |
+| 3 | months 1–3 | month 4 | months 1–4 | month 5 |
+| 4 | months 1–4 | month 5 | months 1–5 | month 6 |
+
+- **Tuning.** Hyperparameters are chosen by fitting on the *fit* months and scoring on the *tune* month (the last training month). The model is then refitted on all training months and scored once on the test month. The test month is never used to choose anything.
+- **Fitted on training rows only.** `fold_data` fits the feature scaler (mean 0, standard deviation 1) and the class threshold on the rows it trains on, then applies them unchanged to the rows it scores. Tree models skip the scaler with `scale=False`.
+- **Embargo.** A label at *t* uses prices up to minute *t + h*. So the last `embargo_minutes` before each scored period are dropped from the rows fitted on it: before the test month, and before the tune month. The default is the horizon *h*, and anything shorter is rejected.
+- **Cut by time.** Folds are defined by timestamps, so they stay correct after `model_frame` drops rows.
+- **Run length.** At least `first_test_month` months of data are needed, so a `--quick` (one-month) run cannot produce folds.
+
+```python
+from src.evaluate import fold_data, walk_forward_splits
+from src.models import feature_sets, model_frame
+
+frame = model_frame(data, BLOCK_A, BLOCK_B, cfg["horizon_minutes"], cfg["target"]["vol_window_minutes"])
+for fold in walk_forward_splits(frame["open_time"], cfg["horizon_minutes"], cfg["walk_forward"]["first_test_month"],
+                                cfg["walk_forward"]["embargo_minutes"]):
+    for name, columns in feature_sets(BLOCK_A, BLOCK_B).items():
+        tune = fold_data(frame, fold.fit, fold.tune, columns, cfg["target"]["flat_share"])
+        test = fold_data(frame, fold.train, fold.test, columns, cfg["target"]["flat_share"])
+```
+
+`fold_table(folds, frame["open_time"])` gives the size and date range of every set, for the report.
+
+### Metrics
+
+Models save their test-month predictions with one row per model, feature set (`A` or `A+B`), fold and minute: `y_true` and `y_pred` for regression, and `class_true` and `p_down`, `p_flat`, `p_up` for classification. `fold_metrics(predictions, task)` scores each fold, and `results_table` gives the mean, standard deviation, min and max across folds for every model and feature set.
+
+| Task | Metric | Reading |
+| --- | --- | --- |
+| Regression | Out-of-sample R² = 1 − SSE(model) / SSE(zero forecast) | 0 = no better than forecasting no move; negative = worse |
+| Classification | Balanced accuracy, macro F1, log loss | Accuracy alone is not used: when "flat" dominates, always predicting it scores well |
+
+The fitted models include an intercept, so they also forecast the training months' average return. When that average differs from the test month's, R² against the zero forecast pays for it. On BTCUSDT, forecasting the training mean alone scores between −0.0008 and +0.0002 per fold. This affects the comparison with doing nothing, not the A vs A + B comparison: both feature sets carry the same intercept.
+
+### Models (levels 0–2)
+
+Each model is fitted on block A and on A + B, on the same folds and rows (spec section 8):
+
+| Task | Model | Hyperparameter tuned on the tune month |
+| --- | --- | --- |
+| Regression | `zero`: forecasts no move (random walk) | none |
+| Regression | `ridge`, `lasso` | Penalty (scale-free: ridge as a multiple of the training rows, lasso of the target's standard deviation), chosen by out-of-sample R² |
+| Classification | `majority`: the training class shares | none |
+| Classification | `logit`: multinomial logistic regression | `C`, chosen by log loss |
+| Both | `boosting`: histogram gradient boosting (regressor or classifier) | Tree depth and learning rate, chosen by R² or log loss |
+
+`walk_forward_predictions(frame, folds, BLOCK_A, BLOCK_B, flat_share, task)` runs every model × feature set × fold. For each fold it scores every grid value by fitting on the fit months and scoring on the tune month, then refits the best on all training months and forecasts the test month. It returns the test-month predictions in the format above, plus the chosen hyperparameters. `save_predictions` writes them to `data/predictions/<symbol>_<start>_<end>_h<horizon>_<task>.parquet`.
+
+Boosting checks for non-linear effects and interactions that the linear models cannot capture. Its other settings are fixed for noisy minute data: 200 trees, leaves of at least 500 rows, and no early stopping, so a fit depends only on its training rows and `seed` from `config.yaml`. The simplest grid point (depth 1, learning rate 0.003) is close to a constant forecast: if tuning picks it, boosting found nothing to use.
+
+On the real six-month BTCUSDT panel, a full run (both tasks, all models, both feature sets, four folds) takes about 2 minutes on an Apple-silicon laptop. Boosting takes almost all of that; the level 0–1 models take about 10 seconds.
+
+### Significance tests
+
+Forecasts are made every minute for a 15-minute horizon, so consecutive errors overlap. Every test therefore uses Newey-West (HAC) standard errors, with the horizon as the number of lags.
+
+| Function | Test | Used for |
+| --- | --- | --- |
+| `clark_west` | Clark-West, one-sided | **H1**: does A + B forecast better than A? A is nested in A + B, so the test corrects for the noise added by estimating B's coefficients, which are zero if H1 is false |
+| `diebold_mariano` | Diebold-Mariano, two-sided | Non-nested comparisons, such as linear vs boosting, on squared errors or log losses |
+| `hac_coefficients` | OLS with Newey-West standard errors | Level-1 coefficient table: which perp features matter |
+| `holm` | Holm correction | Adjusting the pooled Clark-West p-values across model levels |
+
+`clark_west_table(predictions, models, lags)` gives the H1 answer: one Clark-West test per model and fold (for Figure 11), plus one pooled over all test months. The pooled p-values are Holm-adjusted across models, and `h1_supported` is true when the adjusted p-value is below 5%.
+
+### Running the full ablation
+
+`run_ablation(cfg, data, BLOCK_A, BLOCK_B, symbol, start, end)` runs everything above in one call: the modelling table, the folds, every model on A and A + B for both tasks, and every test. `data` is the panel with the feature columns added. It saves:
+
+| Output | Content |
+| --- | --- |
+| `data/predictions/<symbol>_<start>_<end>_h<horizon>_<task>.parquet` | Test-month predictions of every model, feature set and fold |
+| `report/tables/<symbol>_h<horizon>_folds.csv` | Size and date range of each fold's sets |
+| `report/tables/<symbol>_h<horizon>_tuning_<task>.csv` | Hyperparameters chosen on each tune month |
+| `report/tables/<symbol>_h<horizon>_fold_metrics_<task>.csv` | Metrics of each model, feature set and fold |
+| `report/tables/<symbol>_h<horizon>_results_<task>.csv` | Mean and spread of the metrics across folds |
+| `report/tables/<symbol>_h<horizon>_clark_west.csv` | **H1**: Clark-West of A + B vs A for every regression model except the zero forecast, per fold and pooled, with Holm |
+| `report/tables/<symbol>_h<horizon>_diebold_mariano.csv` | Diebold-Mariano of each linear model vs boosting, per feature set |
+| `report/tables/<symbol>_h<horizon>_coefficients.csv` | Figure 12: OLS coefficients of the A + B model on standardised features, with Newey-West standard errors, 95% intervals and Holm-adjusted p-values for block B |
+| `report/tables/<symbol>_h<horizon>_permutation_importance.csv` | Figure 12: R² lost when each block-B feature is shuffled in the test month, in the A + B ridge and boosting regressions, per fold and pooled |
+
+**Reading the figure 12 tables.** Both are descriptive, not causal:
+- **Coefficients** are fitted in-sample on every usable minute. A coefficient is the change in the forecast 15-minute return for a one-standard-deviation move in the feature.
+- **Coefficient p-values** are individually valid, but every block B coefficient is tested at once: with ten or more of them, about one is expected below 5% by chance. Read `p_holm`, which adjusts for that.
+- **Permutation importance** is computed for ridge (the best linear model) and boosting (the level 2 model). Each is refitted on each fold's training months with its tuned hyperparameters. It then measures how much test-month R² drops when one feature is shuffled. A feature the model doesn't use scores about 0. Correlated features share their importance, because shuffling one leaves the information in the others.
+
+Tables are named by symbol and horizon, so a smoke test on another symbol never overwrites them. Nothing is cached: every call rebuilds the results from the data passed in. On the real BTCUSDT panel it takes about 2 minutes.
+
 ## Configuration
 
 Every run parameter (symbol, horizon, sample window, lags, seed, paths) lives in `config.yaml`. Code reads it with `src.config.load_config()`, so nothing in `src/` hardcodes the coin, the horizon or the dates.
