@@ -88,8 +88,11 @@ def test_diebold_mariano_compares_linear_models_with_boosting(run):
 def test_figure_12_tables_cover_the_perp_features(run):
     _, tables = run
     pooled = tables["permutation_importance"].query("fold == 'all'")
-    assert pooled["feature"].tolist() == ["b1"] and (pooled["model"] == "boosting").all()
-    assert tables["coefficients"]["feature"].tolist() == ["const", "a1", "b1"]
+    assert sorted(zip(pooled["model"], pooled["feature"])) == [("boosting", "b1"), ("ridge", "b1")]
+    assert pooled.set_index("model").loc["ridge", "importance"] > 0  # b1 carries the signal
+    coefficients = tables["coefficients"].set_index("feature")
+    assert list(coefficients.index) == ["const", "a1", "b1"]
+    assert coefficients["p_holm"].isna().tolist() == [True, True, False]  # Holm on block B only
 
 
 def test_duplicate_block_b_features_are_dropped_before_the_models(tmp_path, caplog):
