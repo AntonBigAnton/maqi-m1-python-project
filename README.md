@@ -170,6 +170,15 @@ for fold in walk_forward_splits(frame["open_time"], cfg["horizon_minutes"], cfg[
 
 `fold_table(folds, frame["open_time"])` gives the size and date range of every set, for the report.
 
+### Metrics
+
+Models save their test-month predictions with one row per model, feature set (`A` or `A+B`), fold and minute: `y_true` and `y_pred` for regression, and `class_true` and `p_down`, `p_flat`, `p_up` for classification. `fold_metrics(predictions, task)` scores each fold, and `results_table` gives the mean, standard deviation, min and max across folds for every model and feature set.
+
+| Task | Metric | Reading |
+| --- | --- | --- |
+| Regression | Out-of-sample R² = 1 − SSE(model) / SSE(zero forecast) | 0 = no better than forecasting no move; negative = worse |
+| Classification | Balanced accuracy, macro F1, log loss | Accuracy alone is not used: when "flat" dominates, always predicting it scores well |
+
 ## Configuration
 
 Every run parameter (symbol, horizon, sample window, lags, seed, paths) lives in `config.yaml`. Code reads it with `src.config.load_config()`, so nothing in `src/` hardcodes the coin, the horizon or the dates.
