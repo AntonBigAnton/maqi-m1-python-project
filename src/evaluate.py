@@ -391,6 +391,8 @@ def coefficient_table(frame, block_a, block_b, lags, rows=None):
     return for a one-standard-deviation move of the feature. In-sample, on every row of the
     model_frame by default (rows restricts it): this is inference on the coefficients, not a
     forecast evaluation. lags should be at least the horizon (overlapping labels).
+    p_holm adjusts the block B p-values for testing every block B coefficient at once: with ten of
+    them, one is expected below 5% by chance alone. It is empty for block A and the constant.
     """
     columns = feature_sets(block_a, block_b)["A+B"]
     data = frame if rows is None else frame.iloc[rows]
@@ -399,6 +401,10 @@ def coefficient_table(frame, block_a, block_b, lags, rows=None):
         raise ValueError(f"Coefficients are not identified: {redundant} duplicate other features of A + B")
     table = hac_coefficients(X, data[TARGET], lags)
     table.insert(1, "block", table["feature"].map({**{c: "A" for c in block_a}, **{c: "B" for c in block_b}}))
+    is_b = table["block"] == "B"
+    table["p_holm"] = np.nan
+    if is_b.any():
+        table.loc[is_b, "p_holm"] = holm(table.loc[is_b, "p_value"])
     return table
 
 
@@ -452,6 +458,10 @@ def permutation_importance_table(frame, folds, block_a, block_b, flat_share, tun
 
 
 # Full ablation run: one call from the panel with features to every modelling table of the report.
+
+# Models whose permutation importance is saved (Figure 12): ridge, the best linear model, and
+# boosting, the level 2 model of spec §8. Reading both guards against over-reading one model's noise.
+PERMUTATION_MODELS = ("ridge", "boosting")
 
 # Non-nested comparisons tested with Diebold-Mariano: each linear model against boosting.
 DM_PAIRS = {"regression": [("ridge", "boosting"), ("lasso", "boosting")], "classification": [("logit", "boosting")]}
@@ -508,8 +518,9 @@ def run_ablation(cfg, data, block_a, block_b, symbol, start, end, models=None, g
     data/predictions/ and these tables to tables_dir as <symbol>_h<horizon>_<name>.csv:
     folds, tuning_<task>, fold_metrics_<task>, results_<task>, clark_west (the H1 test, on the
     regression models other than the zero forecast), diebold_mariano (linear vs boosting),
-    coefficients (HAC coefficients of the A + B model, in-sample) and permutation_importance
-    (block B features in the A + B boosting regression; empty if boosting was not run).
+    coefficients (HAC coefficients of the A + B model, in-sample, with Holm-adjusted block B
+    p-values) and permutation_importance (block B features in the A + B ridge and boosting
+    regressions, for those that ran).
     models and grids ({task: [model names]}, {model: grid}) restrict the run, e.g. in tests.
     Block B features that duplicate others (models.REDUNDANT_FEATURE_PREFIXES) are dropped first.
     Nothing is cached: results are always rebuilt from the data passed in.
@@ -533,11 +544,13 @@ def run_ablation(cfg, data, block_a, block_b, symbol, start, end, models=None, g
         )
         save_predictions(predictions, predictions_path(cfg["data_dir"], symbol, start, end, horizon, task))
         if task == "regression":
-            # without boosting in the run there is nothing to permute: no folds give an empty table
-            boosting_folds = folds if "boosting" in set(predictions["model"]) else []
-            tables["permutation_importance"] = permutation_importance_table(
-                frame, boosting_folds, block_a, block_b, cfg["target"]["flat_share"], tuning, seed=cfg["seed"]
-            )
+            # one importance table per model of PERMUTATION_MODELS that ran; none ran gives an empty table
+            ran = [m for m in PERMUTATION_MODELS if m in set(predictions["model"])]
+            tables["permutation_importance"] = pd.concat([
+                permutation_importance_table(frame, folds if ran else [], block_a, block_b,
+                                             cfg["target"]["flat_share"], tuning, model=model, seed=cfg["seed"])
+                for model in (ran or PERMUTATION_MODELS[:1])
+            ], ignore_index=True)
         tuning["params"] = tuning["params"].map(lambda params: json.dumps(params, sort_keys=True))
         metrics = fold_metrics(predictions, task)
         tables.update({f"tuning_{task}": tuning, f"fold_metrics_{task}": metrics,

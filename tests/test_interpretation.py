@@ -6,7 +6,7 @@ import pandas as pd
 import pytest
 
 from src.evaluate import (
-    coefficient_table, fold_data, permutation_importance_table, tuned_params, walk_forward_predictions,
+    coefficient_table, holm, fold_data, permutation_importance_table, tuned_params, walk_forward_predictions,
     walk_forward_splits,
 )
 from src.models import TARGET, VOL_SCALE, fit_model, fit_predict
@@ -59,6 +59,14 @@ def test_coefficients_find_the_perp_signal_with_hac_intervals(frame):
     assert table.loc["b1", "coef"] == pytest.approx(0.3, abs=0.03)  # standardised: slope × sd(b1) = 0.3
     assert table.loc["b1", "ci_low"] > 0 and table.loc["b1", "p_value"] < 1e-6
     assert abs(table.loc["b2", "t"]) < 3  # noise: no strong effect (a 95% interval misses 0 one time in 20)
+
+
+def test_block_b_p_values_are_holm_adjusted_for_testing_every_block_b_coefficient(frame):
+    table = coefficient_table(frame, ["a1"], ["b1", "b2"], lags=H).set_index("feature")
+    assert table.loc[["const", "a1"], "p_holm"].isna().all()
+    b = table.loc[["b1", "b2"]]
+    assert b["p_holm"].tolist() == pytest.approx(list(holm(b["p_value"])))
+    assert (b["p_holm"] >= b["p_value"]).all()
 
 
 def test_coefficients_can_be_restricted_to_some_rows(frame, folds):
