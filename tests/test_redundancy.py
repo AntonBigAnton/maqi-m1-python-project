@@ -16,18 +16,22 @@ def realistic_panel(rows=3000, seed=0):
     rng = np.random.default_rng(seed)
     start = pd.Timestamp("2026-01-01 00:05").value // 10**6
     spot = 100 * np.exp(np.cumsum(rng.normal(0, 3e-4, rows)))
+    perp = spot * (1 + rng.normal(-4e-4, 1e-4, rows))  # basis around -4 bps
+    open_interest = 1e5 * np.exp(np.cumsum(rng.normal(0, 1e-3, rows)))
     volume, perp_volume = rng.uniform(1, 3, rows), rng.uniform(2, 6, rows)
     return pd.DataFrame({
         "open_time": start + np.arange(rows) * MINUTE,
         "spot_vwap": spot,
-        "perp_vwap": spot * (1 + rng.normal(-4e-4, 1e-4, rows)),  # basis around -4 bps
+        "perp_vwap": perp,
+        "perp_close": perp,
         "spot_volume": volume,
         "spot_signed_volume": volume * rng.uniform(-1, 1, rows),
         "spot_count": pd.array(rng.integers(50, 500, rows), dtype="Int64"),
         "perp_volume": perp_volume,
         "perp_signed_volume": perp_volume * rng.uniform(-1, 1, rows),
         "metrics_time": pd.array(start + (np.arange(rows) // 5) * 5 * MINUTE, dtype="Int64"),
-        "sum_open_interest": 1e5 * np.exp(np.cumsum(rng.normal(0, 1e-3, rows))),
+        "sum_open_interest": open_interest,
+        "sum_open_interest_value": open_interest * perp,
         "sum_toptrader_long_short_ratio": rng.uniform(0.8, 1.5, rows),
         "count_long_short_ratio": rng.uniform(0.8, 1.5, rows),
         "sum_taker_long_short_vol_ratio": rng.uniform(0.5, 2, rows),
@@ -63,11 +67,14 @@ def test_redundant_features_catch_exact_and_near_exact_copies_only():
 def test_tinas_features_contain_exactly_the_duplicates_we_drop():
     """On a realistic panel, A + B has redundant features; after drop_redundant it has none."""
     data = build_features(realistic_panel(), load_config())
-    flagged = redundant_features(standardised(data, BLOCK_A + BLOCK_B))
+    # sparse event counts can be zero throughout a short test panel: leave out constant columns,
+    # which the guard would flag for that reason alone
+    varying = lambda columns: [c for c in columns if data[c].nunique(dropna=True) > 1]
+    flagged = redundant_features(standardised(data, varying(BLOCK_A + BLOCK_B)))
     # flow divergence is an exact copy; lead return and basis change differ only at second order,
     # so the guard flags whichever of each pair comes second (b_lead_L, after b_basis_chg_L)
     assert set(flagged) == {"b_flow_div_5", "b_flow_div_15", "b_lead_5", "b_lead_15"}
-    assert redundant_features(standardised(data, BLOCK_A + drop_redundant(BLOCK_B))) == []
+    assert redundant_features(standardised(data, varying(BLOCK_A + drop_redundant(BLOCK_B)))) == []
     assert len(drop_redundant(BLOCK_B)) == len(BLOCK_B) - 4  # two windows x two duplicate kinds
 
 
