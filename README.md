@@ -179,6 +179,22 @@ Forecasts are made every minute for a 15-minute horizon, so consecutive errors o
 
 `clark_west_table(predictions, models, lags)` gives the H1 answer: one Clark-West test per model and fold (for Figure 11), plus one pooled over all test months. The pooled p-values are Holm-adjusted across models, and `h1_supported` is true when the adjusted p-value is below 5%.
 
+### Running the full ablation
+
+`run_ablation(cfg, data, BLOCK_A, BLOCK_B, symbol, start, end)` runs everything above in one call: the modelling table, the folds, every model on A and A + B for both tasks, and every test. `data` is the panel with the feature columns added. It saves:
+
+| Output | Content |
+| --- | --- |
+| `data/predictions/<symbol>_<start>_<end>_h<horizon>_<task>.parquet` | Test-month predictions of every model, feature set and fold |
+| `report/tables/<symbol>_h<horizon>_folds.csv` | Size and date range of each fold's sets |
+| `report/tables/<symbol>_h<horizon>_tuning_<task>.csv` | Hyperparameters chosen on each tune month |
+| `report/tables/<symbol>_h<horizon>_fold_metrics_<task>.csv` | Metrics of each model, feature set and fold |
+| `report/tables/<symbol>_h<horizon>_results_<task>.csv` | Mean and spread of the metrics across folds |
+| `report/tables/<symbol>_h<horizon>_clark_west.csv` | **H1**: Clark-West of A + B vs A for every regression model except the zero forecast, per fold and pooled, with Holm |
+| `report/tables/<symbol>_h<horizon>_diebold_mariano.csv` | Diebold-Mariano of each linear model vs boosting, per feature set |
+
+Tables are named by symbol and horizon, so a smoke test on another symbol never overwrites them. Nothing is cached: every call rebuilds the results from the data passed in. On the real BTCUSDT panel it takes about 2 minutes.
+
 ## Configuration
 
 Every run parameter (symbol, horizon, sample window, lags, seed, paths) lives in `config.yaml`. Code reads it with `src.config.load_config()`, so nothing in `src/` hardcodes the coin, the horizon or the dates.

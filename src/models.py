@@ -181,10 +181,9 @@ def fit_predict(model, params, data, task, seed=0):
         estimator = LogisticRegression(C=params["C"], max_iter=2_000).fit(data.X_train, data.class_train)
         return class_probabilities(estimator, data.X_eval)
     if model == "boosting":
-        settings = dict(
-            max_iter=BOOSTING_TREES, min_samples_leaf=BOOSTING_MIN_LEAF, early_stopping=False,
-            random_state=seed, **params,
-        )
+        # params (from the grid) can also override the fixed settings, e.g. max_iter
+        settings = {"max_iter": BOOSTING_TREES, "min_samples_leaf": BOOSTING_MIN_LEAF, "early_stopping": False,
+                    "random_state": seed, **params}
         if task == "regression":
             estimator = HistGradientBoostingRegressor(**settings)
             return estimator.fit(data.X_train, data.y_train).predict(data.X_eval)
