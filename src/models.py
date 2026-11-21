@@ -1,6 +1,7 @@
 # ablation fits (block A vs A + B): targets, class threshold, feature sets
 import numpy as np
 import pandas as pd
+from sklearn.linear_model import Lasso, LogisticRegression, Ridge
 
 from src.schemas import MS_PER_MINUTE
 
@@ -117,3 +118,49 @@ def model_frame(data, block_a, block_b, horizon_minutes, vol_window_minutes):
     frame = pd.concat([data[["open_time", *columns]], targets[list(TARGET_COLUMNS)]], axis=1)
     frame = frame.replace([np.inf, -np.inf], np.nan).dropna()
     return frame.sort_values("open_time").reset_index(drop=True)
+
+
+# Level 0-1 models (spec §8). Each is fitted on block A and on A + B with the same folds.
+# Penalties are scale-free so one grid suits any symbol or horizon: features are standardised
+# (fold_data), the ridge penalty is a multiple of the number of training rows, and the lasso
+# penalty a multiple of the standard deviation of the training target.
+REGRESSION_MODELS = ("zero", "ridge", "lasso")
+CLASSIFICATION_MODELS = ("majority", "logit")
+DEFAULT_GRIDS = {
+    "zero": [{}],
+    "majority": [{}],
+    "ridge": [{"penalty": p} for p in (1e-3, 1e-2, 1e-1, 1.0, 10.0, 100.0)],
+    "lasso": [{"penalty": p} for p in (1e-4, 1e-3, 3e-3, 1e-2, 3e-2, 1e-1)],
+    "logit": [{"C": c} for c in (1e-3, 1e-2, 1e-1, 1.0)],
+}
+CLASSES = [DOWN, FLAT, UP]  # column order of class probabilities
+
+
+def fit_predict(model, params, data):
+    """Fit one model on data.X_train and forecast data.X_eval.
+
+    data is a FoldData (evaluate.fold_data). Regression models return the forecast returns;
+    classification models return an (n, 3) array of down / flat / up probabilities.
+    zero: forecasts no move (the random walk). majority: the training class shares, so its
+    forecast class is the most common one. ridge / lasso: penalised linear regressions.
+    logit: multinomial logistic regression.
+    """
+    n_eval = len(data.X_eval)
+    if model == "zero":
+        return np.zeros(n_eval)
+    if model == "majority":
+        shares = pd.Series(data.class_train).value_counts(normalize=True).reindex(CLASSES, fill_value=0.0)
+        return np.tile(shares.to_numpy(), (n_eval, 1))
+    if model == "ridge":
+        estimator = Ridge(alpha=params["penalty"] * len(data.X_train))
+        return estimator.fit(data.X_train, data.y_train).predict(data.X_eval)
+    if model == "lasso":
+        estimator = Lasso(alpha=params["penalty"] * float(np.std(data.y_train)), max_iter=10_000)
+        return estimator.fit(data.X_train, data.y_train).predict(data.X_eval)
+    if model == "logit":
+        estimator = LogisticRegression(C=params["C"], max_iter=2_000).fit(data.X_train, data.class_train)
+        proba = np.zeros((n_eval, len(CLASSES)))
+        # a class absent from the training rows gets probability 0
+        proba[:, [CLASSES.index(c) for c in estimator.classes_]] = estimator.predict_proba(data.X_eval)
+        return proba
+    raise ValueError(f"Unknown model {model!r}")
