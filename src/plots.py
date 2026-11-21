@@ -48,3 +48,40 @@ def label_axes(ax, x, y, unit):
         raise ValueError("Every axis needs a unit, e.g. ('min', 'USDT').")
     ax.set_xlabel(f"{x} [{x_unit}]")
     ax.set_ylabel(f"{y} [{y_unit}]")
+
+
+# ---------- Figures (spec section 10) ----------
+
+SIGNAL_TITLES = {
+    "perp_ret": "Perp return",
+    "perp_flow": "Perp flow share",
+    "basis_bps": "Basis",
+}
+
+
+def figure_8(lead_lag, cfg):
+    """Figure 8: cross-correlation of perp signals with future spot returns, lags -30 to +30 min.
+
+    lead_lag is the table from descriptive.lead_lag_table. One panel per perp signal; the grey
+    band is ±1.96 / sqrt(N), too narrow because the series are autocorrelated.
+    """
+    apply_style()
+    signals = list(dict.fromkeys(lead_lag["signal"]))
+    fig, axes = plt.subplots(len(signals), 1, sharex=True, squeeze=False, figsize=(10, 3 * len(signals)))
+    axes = axes[:, 0]
+    for ax, signal in zip(axes, signals):
+        table = lead_lag[lead_lag["signal"] == signal]
+        ax.fill_between(table["lag"], -table["band"], table["band"], color="grey", alpha=0.3,
+                        label="95% band if independent")
+        ax.plot(table["lag"], table["corr"], color=PERP_COLOUR, marker="o", markersize=3,
+                label=f"{SIGNAL_TITLES.get(signal, signal)} at t, spot return at t + lag")
+        ax.axvline(0, color="black", linewidth=0.8)
+        ax.axhline(0, color="black", linewidth=0.8)
+        ax.set_title(SIGNAL_TITLES.get(signal, signal))
+        ax.legend(loc="best")
+        label_axes(ax, "Lag (positive: perp leads spot)", "Correlation", ("min", "–"))
+    for ax in axes[:-1]:
+        ax.set_xlabel("")  # the panels share the x axis: label it once, at the bottom
+    fig.suptitle(f"{cfg['symbol']}: perp signals vs future spot returns")
+    fig.tight_layout()
+    return save_figure(fig, f"fig08_lead_lag_{cfg['symbol']}", cfg)

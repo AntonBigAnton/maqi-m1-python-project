@@ -134,6 +134,19 @@ Binance does not publish liquidations for USD-M perps, so they are inferred. A 5
 - **Cut-offs.** Full sample for the descriptive analysis; `"past"` (earlier bars only) for the model features by default; or fixed values from `deleveraging_thresholds` on training data.
 - **Timing.** A bar's open interest change runs to the reading stamped at its end, as in the spec's table. It is only used once that reading is known, 10 minutes after the bar starts.
 
+## Descriptive analysis: lead-lag
+
+`src/descriptive.py` computes the tables behind the descriptive figures; `src/plots.py` draws them. Does the perp move before spot (H2)?
+
+| Function | What it gives | Reading |
+| --- | --- | --- |
+| `lead_lag_table(panel, max_lag=30)` | Correlation of perp return, perp flow share and basis at minute *t* with the spot return at *t* + lag, lags −30 to +30 | A peak at a positive lag means the perp leads spot; how fast it falls to zero shows how long the lead lasts |
+| `granger(panel, max_lag=15)` | Granger F-tests in both directions (perp signal → spot return and back), with statsmodels OLS | `delta_r2` is the share of variance the other series' past adds: the size of the effect |
+
+- **Confidence band.** Figure 8 shades ±1.96 / √N, the 95% band of zero correlation for independent data. Returns and flows are autocorrelated, so the real band is wider.
+- **Significance vs size.** With about 260,000 minutes almost any effect is significant, so report `delta_r2`, not only the p-value.
+- **No filling.** A missing minute leaves its returns empty, and pairs with an empty value are skipped.
+
 ## Configuration
 
 Every run parameter (symbol, horizon, sample window, lags, seed, paths) lives in `config.yaml`. Code reads it with `src.config.load_config()`, so nothing in `src/` hardcodes the coin, the horizon or the dates.
@@ -149,6 +162,7 @@ Every figure uses the shared style in `src/plots.py`, so they all look the same 
 | `apply_style()` | Sets the matplotlib theme, figure size, font sizes and a light grid. Call once before plotting |
 | `label_axes(ax, x, y, unit)` | Labels both axes with their units: `unit=("min", "bps")` gives `Time [min]` and `Basis [bps]`. Raises an error if a unit is missing |
 | `save_figure(fig, name, cfg)` | Saves the figure as `<figures_dir>/<name>.png` (`report/figures` in `config.yaml`), creates the folder if needed, then closes the figure |
+| `figure_8(lead_lag, cfg)` | Figure 8 ★: cross-correlation of each perp signal with future spot returns (from `lead_lag_table`), with the ±1.96 / √N band; saved as `fig08_lead_lag_<symbol>.png` |
 
 ## Contributing
 
