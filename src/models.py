@@ -86,6 +86,48 @@ def classify(y, vol_scale, threshold):
     return np.select([y > band, y < -band], [UP, DOWN], default=FLAT).astype("int64")
 
 
+# Block B features that duplicate other features of A + B (features.py builds them; the models
+# drop them). Both hold exactly on the panel, at every look-back window L:
+#   b_flow_div_L  = b_flow_L - a_flow_L        (flow divergence: both flows are already features)
+#   b_basis_chg_L = 10,000 x b_lead_L          (basis change in bps = perp minus spot return)
+# With them, the A + B coefficients are not identified and permutation importance is split
+# between twins. Matched by prefix so every horizon's look-back windows are covered.
+REDUNDANT_FEATURE_PREFIXES = ("b_flow_div_", "b_basis_chg_")
+
+
+def drop_redundant(features):
+    """The features without those that duplicate others (REDUNDANT_FEATURE_PREFIXES), in the same order."""
+    return [f for f in features if not f.startswith(REDUNDANT_FEATURE_PREFIXES)]
+
+
+def redundant_features(X, tolerance=1e-4):
+    """Columns of X that are (almost) exact linear combinations of the columns before them.
+
+    Each column is regressed on the earlier kept ones; it is redundant if they explain all but a
+    share tolerance of its variance (R² above 0.9999 by default). Catches exact copies (b_flow_div)
+    and near-exact ones (b_basis_chg vs b_lead), which a plain rank check can miss. On the BTCUSDT
+    panel the duplicates leave about 6e-8 of their variance unexplained, while the most collinear
+    genuine feature (a_rv_15, given the other volatility windows) leaves 0.17.
+    """
+    values = np.asarray(X, dtype=float)
+    values = values - values.mean(axis=0)
+    kept, redundant = [], []
+    for j, name in enumerate(X.columns):
+        column = values[:, j]
+        total = column @ column
+        if kept and total > 0:
+            coef, *_ = np.linalg.lstsq(values[:, kept], column, rcond=None)
+            residual = column - values[:, kept] @ coef
+            if residual @ residual <= tolerance * total:
+                redundant.append(name)
+                continue
+        if total == 0:
+            redundant.append(name)  # a constant column carries no information either
+            continue
+        kept.append(j)
+    return redundant
+
+
 def feature_sets(block_a, block_b):
     """The two specifications of the ablation: spot-only baseline (A) and A plus perp features (B).
 

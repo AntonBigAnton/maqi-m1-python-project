@@ -138,6 +138,11 @@ Targets are in `src/models.py` and the splitter is in `src/evaluate.py` (spec se
 - **Threshold fitted on training data only.** *k* is chosen on each fold's training rows so that a share `flat_share` (one third) of them is flat, then applied unchanged to the test rows.
 - **No filling.** A missing VWAP at *t* or *t + h* (no trade, gap, end of the window) leaves the target missing. The future price is looked up by time, not by row position.
 - **Same rows for both models.** `model_frame` drops any minute that is missing the target, the scale or any feature of block A or B. The baseline (A) and the full model (A + B) are then scored on the same minutes, so any difference between them comes from block B.
+- **Duplicate block B features are dropped.** Two kinds of block B features in `src/features.py` repeat information already in A + B, at every look-back window *L*. `run_ablation` drops these four before fitting (with the default lags) and keeps every other block B feature:
+  - `b_flow_div_L` equals `b_flow_L` − `a_flow_L` exactly, and both flows are already features.
+  - `b_basis_chg_L` is the change in the perp/spot gap, which is the perp-minus-spot return `b_lead_L` in bps (correlation 1.000000 on the BTCUSDT panel).
+
+  Kept, they would make the coefficient table unidentifiable and split permutation importance between twins. `coefficient_table` refuses features that duplicate others (R² above 0.9999 on the other features) and names them.
 
 ### Walk-forward splits
 

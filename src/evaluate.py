@@ -13,7 +13,8 @@ from statsmodels.stats.multitest import multipletests
 
 from src.models import (
     CLASSIFICATION_MODELS, DEFAULT_GRIDS, DOWN, FLAT, REGRESSION_MODELS, TARGET, UP, VOL_SCALE,
-    classify, feature_sets, fit_flat_threshold, fit_model, fit_predict, model_frame,
+    REDUNDANT_FEATURE_PREFIXES, classify, drop_redundant, feature_sets, fit_flat_threshold, fit_model, fit_predict,
+    model_frame, redundant_features,
 )
 from src.schemas import MS_PER_MINUTE
 
@@ -394,6 +395,8 @@ def coefficient_table(frame, block_a, block_b, lags, rows=None):
     columns = feature_sets(block_a, block_b)["A+B"]
     data = frame if rows is None else frame.iloc[rows]
     X = pd.DataFrame(StandardScaler().fit_transform(data[columns]), index=data.index, columns=columns)
+    if redundant := redundant_features(X):
+        raise ValueError(f"Coefficients are not identified: {redundant} duplicate other features of A + B")
     table = hac_coefficients(X, data[TARGET], lags)
     table.insert(1, "block", table["feature"].map({**{c: "A" for c in block_a}, **{c: "B" for c in block_b}}))
     return table
@@ -508,9 +511,14 @@ def run_ablation(cfg, data, block_a, block_b, symbol, start, end, models=None, g
     coefficients (HAC coefficients of the A + B model, in-sample) and permutation_importance
     (block B features in the A + B boosting regression; empty if boosting was not run).
     models and grids ({task: [model names]}, {model: grid}) restrict the run, e.g. in tests.
+    Block B features that duplicate others (models.REDUNDANT_FEATURE_PREFIXES) are dropped first.
     Nothing is cached: results are always rebuilt from the data passed in.
     """
     horizon = cfg["horizon_minutes"]
+    if dropped := [f for f in block_b if f not in drop_redundant(block_b)]:
+        log.info("Dropped block B features that duplicate others (%s): %s", ", ".join(REDUNDANT_FEATURE_PREFIXES),
+                 ", ".join(dropped))
+        block_b = drop_redundant(block_b)
     frame = model_frame(data, block_a, block_b, horizon, cfg["target"]["vol_window_minutes"])
     folds = walk_forward_splits(
         frame["open_time"], horizon, cfg["walk_forward"]["first_test_month"], cfg["walk_forward"]["embargo_minutes"]
