@@ -40,6 +40,9 @@ def label_axes(ax, x, y, unit):
 
     Raises an error if a unit is missing, so no figure goes out without units.
     """
+    if not isinstance(unit, (tuple, list)) or len(unit) != 2:
+        raise ValueError("unit must be a pair (x_unit, y_unit), e.g. ('min', 'bps').")
+
     x_unit, y_unit = unit
     if not x_unit or not y_unit:
         raise ValueError("Every axis needs a unit, e.g. ('min', 'USDT').")

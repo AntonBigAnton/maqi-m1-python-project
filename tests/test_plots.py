@@ -24,3 +24,8 @@ def test_label_axes_requires_units():
     fig, ax = plt.subplots()
     with pytest.raises(ValueError):
         plots.label_axes(ax, "Time", "Price", ("min", ""))
+
+def test_label_axes_rejects_a_single_string():
+    fig, ax = plt.subplots()
+    with pytest.raises(ValueError):
+        plots.label_axes(ax, "Time", "Price", "ms")
