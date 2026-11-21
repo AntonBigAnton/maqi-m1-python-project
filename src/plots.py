@@ -85,3 +85,54 @@ def figure_8(lead_lag, cfg):
     fig.suptitle(f"{cfg['symbol']}: perp signals vs future spot returns")
     fig.tight_layout()
     return save_figure(fig, f"fig08_lead_lag_{cfg['symbol']}", cfg)
+
+
+def figure_1(missing, cfg):
+    """Figure 1: missing minutes per day (rows) and UTC hour (columns), from descriptive.missing_minutes."""
+    apply_style()
+    fig, ax = plt.subplots(figsize=(10, 8))
+    
+    # 0 is always white, even when no minute is missing
+    worst = max(1, int(missing.to_numpy().max()))
+    image = ax.imshow(missing.to_numpy(), aspect="auto", cmap="Reds", vmin=0, vmax=worst, interpolation="nearest")
+
+    ax.set_xticks(range(0, 24, 3))
+    days = list(missing.index)
+    step = max(1, len(days) // 12)
+    ax.set_yticks(range(0, len(days), step))
+    ax.set_yticklabels([str(d) for d in days[::step]])
+    ax.grid(False)
+    fig.colorbar(image, ax=ax, label="Missing minutes [count]")
+    label_axes(ax, "Hour of day", "Day", ("UTC", "date"))
+    ax.set_title(f"{cfg['symbol']}: missing minutes (spot or perp)")
+    return save_figure(fig, f"fig01_missing_minutes_{cfg['symbol']}", cfg)
+
+
+def figure_2(share, cfg):
+    """Figure 2: daily perp share of traded value, from descriptive.volume_share."""
+    apply_style()
+    fig, ax = plt.subplots()
+    ax.plot(share.index, share["perp_share"] * 100, color=PERP_COLOUR, label="Perp share")
+    ax.axhline(50, color="black", linewidth=0.8, linestyle="--", label="Equal split")
+    ax.legend(loc="best")
+    label_axes(ax, "Day", "Perp share of traded value", ("UTC", "%"))
+    ax.set_title(f"{cfg['symbol']}: perp vs spot traded value")
+    return save_figure(fig, f"fig02_volume_share_{cfg['symbol']}", cfg)
+
+
+def figure_3(profile, cfg):
+    """Figure 3: volume and volatility by UTC hour for spot and perp, from descriptive.intraday_profile."""
+    apply_style()
+    fig, (top, bottom) = plt.subplots(2, 1, sharex=True, figsize=(10, 7))
+    top.plot(profile.index, profile["spot_volume"] / 1e6, color=SPOT_COLOUR, marker="o", label="Spot")
+    top.plot(profile.index, profile["perp_volume"] / 1e6, color=PERP_COLOUR, marker="s", label="Perp")
+    label_axes(top, "Hour of day", "Traded value per minute", ("UTC", "million USDT"))
+    top.set_xlabel("")
+    top.legend(loc="best")
+    bottom.plot(profile.index, profile["spot_vol_bps"], color=SPOT_COLOUR, marker="o", label="Spot")
+    bottom.plot(profile.index, profile["perp_vol_bps"], color=PERP_COLOUR, marker="s", label="Perp")
+    label_axes(bottom, "Hour of day", "Std of 1-min returns", ("UTC", "bps"))
+    bottom.legend(loc="best")
+    fig.suptitle(f"{cfg['symbol']}: intraday activity")
+    fig.tight_layout()
+    return save_figure(fig, f"fig03_intraday_{cfg['symbol']}", cfg)

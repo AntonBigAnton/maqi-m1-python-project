@@ -8,7 +8,7 @@ import numpy as np
 import pandas as pd
 import statsmodels.api as sm
 
-from src.features import BPS
+from src.features import BPS, MS_PER_HOUR
 
 Z_95 = 1.96  # two-sided 95% normal quantile
 PERP_SIGNALS = ["perp_ret", "perp_flow", "basis_bps"]
@@ -89,3 +89,59 @@ def granger(panel, max_lag=15):
             result = granger_pair(signals[cause], signals[effect], max_lag)
             rows.append({"cause": cause, "effect": effect, **result})
     return pd.DataFrame(rows)
+
+
+# ---------- Blocks A-B: data quality and market structure (#20) ----------
+
+def missing_minutes(panel):
+    """Missing minutes (spot or perp, the panel's gap mask) per day and UTC hour: a day x hour table."""
+    table = pd.DataFrame({
+        "day": pd.to_datetime(panel["open_time"], unit="ms", utc=True).dt.date,
+        "hour": (panel["open_time"] // MS_PER_HOUR) % 24,
+        "missing": panel["gap"].astype(int),
+    })
+    return table.pivot_table(index="day", columns="hour", values="missing", aggfunc="sum", fill_value=0)
+
+
+def tracking_stats(panel):
+    """How closely spot and perp closes track each other: the gap |perp / spot - 1| in bps.
+
+    The same measure as panel.check_spot_perp_tracking, returned as a table instead of a log line.
+    """
+    gap_bps = ((panel["perp_close"] / panel["spot_close"] - 1) * BPS).dropna()
+    return pd.DataFrame([{
+        "minutes": len(gap_bps),
+        "mean_bps": gap_bps.mean(),
+        "median_abs_bps": gap_bps.abs().median(),
+        "p99_abs_bps": gap_bps.abs().quantile(0.99),
+        "max_abs_bps": gap_bps.abs().max(),
+    }])
+
+
+def volume_share(panel):
+    """Daily perp share of the traded value: perp / (perp + spot) quote volume, between 0 and 1."""
+    day = pd.to_datetime(panel["open_time"], unit="ms", utc=True).dt.floor("D")
+    daily = pd.DataFrame({
+        "spot": panel["spot_quote_volume"],
+        "perp": panel["perp_quote_volume"],
+    }).groupby(day.rename("day")).sum()
+    daily["perp_share"] = daily["perp"] / (daily["perp"] + daily["spot"])
+    return daily
+
+
+def intraday_profile(panel):
+    """Average activity by UTC hour: quote volume per minute and the std of 1-minute log returns (bps)."""
+    hour = ((panel["open_time"] // MS_PER_HOUR) % 24).rename("hour")
+    table = pd.DataFrame({
+        "spot_volume": panel["spot_quote_volume"],
+        "perp_volume": panel["perp_quote_volume"],
+        "spot_vol_bps": np.log(panel["spot_vwap"]).diff() * BPS,
+        "perp_vol_bps": np.log(panel["perp_vwap"]).diff() * BPS,
+    })
+    grouped = table.groupby(hour)
+    return pd.DataFrame({
+        "spot_volume": grouped["spot_volume"].mean(),
+        "perp_volume": grouped["perp_volume"].mean(),
+        "spot_vol_bps": grouped["spot_vol_bps"].std(),
+        "perp_vol_bps": grouped["perp_vol_bps"].std(),
+    })

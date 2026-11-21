@@ -43,3 +43,20 @@ def test_figure_8_writes_the_file(tmp_path):
     path = plots.figure_8(lead_lag, {"figures_dir": tmp_path, "symbol": "TESTUSDT"})
     assert path.exists()
     assert path.name == "fig08_lead_lag_TESTUSDT.png"
+
+
+def test_figures_1_to_3_write_their_files(tmp_path):
+    from src import descriptive
+    from tests.test_descriptive import market_panel
+
+    cfg = {"figures_dir": tmp_path, "symbol": "TESTUSDT"}
+    panel = market_panel()
+    paths = [
+        plots.figure_1(descriptive.missing_minutes(panel), cfg),
+        plots.figure_2(descriptive.volume_share(panel), cfg),
+        plots.figure_3(descriptive.intraday_profile(panel), cfg),
+    ]
+    assert [p.name for p in paths] == [
+        "fig01_missing_minutes_TESTUSDT.png", "fig02_volume_share_TESTUSDT.png", "fig03_intraday_TESTUSDT.png",
+    ]
+    assert all(p.exists() for p in paths)

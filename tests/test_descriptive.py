@@ -3,7 +3,10 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from src.descriptive import cross_correlation, granger, granger_pair, lead_lag_signals, lead_lag_table
+from src.descriptive import (
+    cross_correlation, granger, granger_pair, intraday_profile, lead_lag_signals, lead_lag_table,
+    missing_minutes, tracking_stats, volume_share,
+)
 
 MINUTE = 60_000
 LEAD = 3  # x moves 3 minutes before y
@@ -81,3 +84,53 @@ def test_missing_minute_stays_missing():
     signals = lead_lag_signals(panel)
     assert signals.loc[4:5, ["spot_ret", "perp_ret"]].isna().all().all()  # returns into and out of minute 4
     assert np.isnan(signals.loc[4, "basis_bps"]) and not np.isnan(signals.loc[5, "basis_bps"])
+
+
+# ---------- Blocks A-B: data quality and market structure (#20) ----------
+
+JAN_1_MS = 1767225600000  # 2026-01-01 00:00 UTC
+
+
+def market_panel(days=2, seed=0):
+    """A complete 1-minute spot/perp panel from 2026-01-01: random walk prices, perp 5 bps above spot."""
+    rng = np.random.default_rng(seed)
+    rows = days * 1440
+    spot = 100 * np.exp(np.cumsum(rng.normal(0, 1e-3, rows)))
+    perp = spot * 1.0005
+    return pd.DataFrame({
+        "open_time": JAN_1_MS + np.arange(rows) * MINUTE,
+        "spot_close": spot, "perp_close": perp,
+        "spot_vwap": spot, "perp_vwap": perp,
+        "spot_volume": 1.0, "perp_volume": 3.0,
+        "spot_quote_volume": spot * 1.0, "perp_quote_volume": perp * 3.0,
+        "spot_signed_volume": rng.uniform(-1, 1, rows), "perp_signed_volume": rng.uniform(-3, 3, rows),
+        "gap": False,
+    })
+
+
+def test_missing_minutes_counts_gaps_by_day_and_hour():
+    panel = market_panel()
+    panel.loc[1440 + 3 * 60 + 10: 1440 + 3 * 60 + 14, "gap"] = True  # 5 minutes on Jan 2, 03:10-03:14
+    table = missing_minutes(panel)
+    assert table.shape == (2, 24)
+    assert table.iloc[1, 3] == 5
+    assert table.to_numpy().sum() == 5
+
+
+def test_tracking_stats_in_bps():
+    stats = tracking_stats(market_panel()).iloc[0]
+    assert stats["median_abs_bps"] == pytest.approx(5.0)
+    assert stats["minutes"] == 2 * 1440
+
+
+def test_volume_share_is_perp_over_total():
+    share = volume_share(market_panel())
+    assert len(share) == 2
+    # perp trades 3 units at a price 5 bps above spot's 1 unit
+    assert np.allclose(share["perp_share"], 3 * 1.0005 / (3 * 1.0005 + 1))
+
+
+def test_intraday_profile_has_one_row_per_hour():
+    profile = intraday_profile(market_panel())
+    assert list(profile.index) == list(range(24))
+    assert (profile["spot_vol_bps"] > 0).all()
