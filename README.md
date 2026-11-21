@@ -127,6 +127,18 @@ Row `open_time = t` holds the candles of the minute starting at *t*. Columns:
 
 Every run parameter (symbol, horizon, sample window, lags, seed, paths) lives in `config.yaml`. Code reads it with `src.config.load_config()`, so nothing in `src/` hardcodes the coin, the horizon or the dates.
 
+## Figures
+
+Every figure uses the shared style in `src/plots.py`, so they all look the same in the report (spec §10).
+
+| Name | What it does |
+| --- | --- |
+| `SPOT_COLOUR`, `PERP_COLOUR` | Fixed colours: spot is always blue (`#1f77b4`), perp always orange (`#ff7f0e`) |
+| `CLUSTER_MARKER` | How suspected deleveraging clusters are marked: a red ✕, used as `ax.scatter(x, y, **CLUSTER_MARKER)` |
+| `apply_style()` | Sets the matplotlib theme, figure size, font sizes and a light grid. Call once before plotting |
+| `label_axes(ax, x, y, unit)` | Labels both axes with their units: `unit=("min", "bps")` gives `Time [min]` and `Basis [bps]`. Raises an error if a unit is missing |
+| `save_figure(fig, name, cfg)` | Saves the figure as `<figures_dir>/<name>.png` (`report/figures` in `config.yaml`), creates the folder if needed, then closes the figure |
+
 ## Contributing
 
 - One branch per task, merged into `main` through a pull request with one approving review. Direct pushes to `main` are blocked.
