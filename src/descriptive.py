@@ -13,7 +13,8 @@ import statsmodels.api as sm
 from statsmodels.tsa.stattools import adfuller, kpss
 
 from src.features import (
-    BAR_MS, BPS, DELEV_OI_QUANTILE, MS_PER_HOUR, cluster_events, deleveraging_events,
+    BAR_MS, BPS, DELEV_MOVE_QUANTILE, DELEV_OI_QUANTILE, MS_PER_HOUR, cluster_events, deleveraging_events,
+    five_minute_bars,
 )
 from src.schemas import MS_PER_MINUTE
 
@@ -328,3 +329,80 @@ def redundant_pairs(corr, threshold=0.9):
             if abs(value) >= threshold:
                 rows.append({"feature_1": first, "feature_2": second, "corr": value})
     return pd.DataFrame(rows, columns=["feature_1", "feature_2", "corr"])
+
+
+# ---------- Block E: event study around suspected deleveraging clusters (#23) ----------
+
+def event_paths(panel, starts, window=(-30, 60)):
+    """Spot and basis paths around each event, one row per event and one column per minute offset.
+
+    Time 0 is the end of the event's 5-minute bar (start + 5 min): only what happens after it
+    counts as evidence of a lead. Prices are minute closes, so the price at offset k is the close
+    of minute 0 + k - 1. spot_bps is the cumulative spot log return since time 0, basis_bps the
+    change in basis since time 0, both in bps. An event whose window leaves the panel is dropped.
+    """
+    offsets = np.arange(window[0], window[1] + 1)
+    position = pd.Series(np.arange(len(panel)), index=panel["open_time"].to_numpy())
+    log_spot = np.log(panel["spot_close"].to_numpy())
+    basis = ((panel["perp_close"] / panel["spot_close"] - 1) * BPS).to_numpy()
+    spot_rows, basis_rows = [], []
+    for start in starts:
+        last_minute_of_bar = start + BAR_MS - MS_PER_MINUTE  # its close is the price at time 0
+        if last_minute_of_bar not in position.index:
+            continue
+        rows = position[last_minute_of_bar] + offsets
+        if rows[0] < 0 or rows[-1] >= len(panel):
+            continue
+        spot_rows.append((log_spot[rows] - log_spot[rows[offsets == 0]]) * BPS)
+        basis_rows.append(basis[rows] - basis[rows[offsets == 0]])
+    return offsets, np.array(spot_rows).reshape(-1, len(offsets)), np.array(basis_rows).reshape(-1, len(offsets))
+
+
+def bootstrap_mean(paths, n_boot=1000, seed=0):
+    """Mean path and its 95% bootstrap interval, resampling whole events (rows) with replacement."""
+    n = len(paths)
+    valid = ~np.isnan(paths)
+    filled = np.where(valid, paths, 0.0)
+    mean = filled.sum(axis=0) / valid.sum(axis=0)
+    counts = np.random.default_rng(seed).multinomial(n, np.full(n, 1 / n), size=n_boot)  # n_boot resamples
+    boot = (counts @ filled) / (counts @ valid)
+    low, high = np.nanpercentile(boot, [2.5, 97.5], axis=0)
+    return mean, low, high
+
+
+def event_study(panel, clusters, window=(-30, 60), n_boot=1000, seed=0):
+    """Mean spot and basis paths around clusters, by side, with 95% bootstrap intervals (Figure 9).
+
+    clusters needs start (ms) and side ("long" = price fell, "short" = price rose), as given by
+    deleveraging_clusters or placebo_events. Returns one row per side, series and minute offset.
+    """
+    tables = []
+    for side in ("long", "short"):
+        starts = clusters.loc[clusters["side"] == side, "start"]
+        offsets, spot, basis = event_paths(panel, starts, window)
+        if len(spot) == 0:
+            continue
+        for series, paths in (("spot_bps", spot), ("basis_bps", basis)):
+            mean, low, high = bootstrap_mean(paths, n_boot, seed)
+            tables.append(pd.DataFrame({"side": side, "series": series, "offset_min": offsets,
+                                        "mean": mean, "low": low, "high": high, "n": len(paths)}))
+    return pd.concat(tables, ignore_index=True)
+
+
+def placebo_events(panel, clusters, ret_q=DELEV_MOVE_QUANTILE, exclusion_minutes=60):
+    """Placebo events: 5-minute bars with an equally big perp move but no fall in open interest.
+
+    Same move cut-off as the proxy, open interest flat or rising, and more than exclusion_minutes
+    away from any cluster. If the cluster paths look like these, a big move alone explains them.
+    """
+    bars = five_minute_bars(panel)
+    big_move = bars["perp_ret"].abs() >= bars["perp_ret"].abs().quantile(ret_q)
+    chosen = bars[big_move & (bars["oi_chg"] >= 0)]
+    starts = clusters["start"].to_numpy()
+    exclusion_ms = exclusion_minutes * MS_PER_MINUTE
+    far = np.array([len(starts) == 0 or np.abs(starts - t).min() > exclusion_ms for t in chosen.index], dtype=bool)
+    chosen = chosen.loc[far]
+    return pd.DataFrame({
+        "start": chosen.index.to_numpy(),
+        "side": np.where(chosen["perp_ret"] < 0, "long", "short"),
+    })

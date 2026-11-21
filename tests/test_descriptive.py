@@ -4,9 +4,10 @@ import pandas as pd
 import pytest
 
 from src.descriptive import (
-    acf_table, basis_half_life, cross_correlation, five_minute_series, flow_correlation, granger, granger_pair,
-    horizon_returns, intraday_profile, lead_lag_signals, lead_lag_table, leverage_series, missing_minutes,
-    redundant_pairs, return_moments, save_table, stationarity_tests, tracking_stats, volume_share,
+    acf_table, basis_half_life, bootstrap_mean, cross_correlation, event_paths, event_study, five_minute_series,
+    flow_correlation, granger, granger_pair, horizon_returns, intraday_profile, lead_lag_signals, lead_lag_table,
+    leverage_series, missing_minutes, placebo_events, redundant_pairs, return_moments, save_table,
+    stationarity_tests, tracking_stats, volume_share,
 )
 
 MINUTE = 60_000
@@ -241,3 +242,73 @@ def test_redundant_pairs_flags_twins_only():
     features = pd.DataFrame({"x": x, "twice_x": 2 * x, "noise": rng.normal(size=1000)})
     pairs = redundant_pairs(features.corr(), threshold=0.9)
     assert list(zip(pairs["feature_1"], pairs["feature_2"])) == [("x", "twice_x")]
+
+
+# ---------- Block E: event study around suspected deleveraging clusters (#23) ----------
+
+def event_panel(rows=600):
+    """Flat prices with spot closes rising 20 bps 10 minutes after time 0 of an event starting at minute 100."""
+    panel = market_panel(days=1).iloc[:rows].copy()
+    panel["spot_close"] = 100.0
+    panel["perp_close"] = 100.05
+    panel.loc[114:, "spot_close"] = 100.0 * np.exp(20 / 10_000)  # time 0 = 105 (end of the 100-104 bar)
+    return panel
+
+
+def events(minutes, side="long"):
+    return pd.DataFrame({"start": [JAN_1_MS + m * MINUTE for m in minutes], "side": side})
+
+
+def test_event_path_starts_at_zero_at_the_end_of_the_bar():
+    offsets, spot, basis = event_paths(event_panel(), events([100])["start"], window=(-5, 15))
+    path = pd.Series(spot[0], index=offsets)
+    assert path[0] == pytest.approx(0.0)
+    assert path[9] == pytest.approx(0.0)    # close of minute 113, before the jump
+    assert path[10] == pytest.approx(20.0)  # close of minute 114, after it
+    assert basis[0, offsets == 10][0] == pytest.approx(-20.0, abs=0.1)  # spot rose, perp did not
+
+
+def test_events_too_close_to_the_edge_are_dropped():
+    offsets, spot, _ = event_paths(event_panel(), events([10, 100, 590])["start"], window=(-30, 60))
+    assert len(spot) == 1  # 10 needs minutes before the panel, 590 minutes after it
+
+
+def test_bootstrap_band_collapses_when_every_event_is_identical():
+    paths = np.tile(np.arange(5.0), (20, 1))
+    mean, low, high = bootstrap_mean(paths, n_boot=200)
+    assert np.allclose(mean, np.arange(5.0))
+    assert np.allclose(low, mean) and np.allclose(high, mean)
+
+
+def test_bootstrap_band_contains_the_mean():
+    rng = np.random.default_rng(0)
+    mean, low, high = bootstrap_mean(rng.normal(size=(50, 10)), n_boot=500)
+    assert (low <= mean).all() and (mean <= high).all()
+
+
+def test_event_study_by_side_and_series():
+    study = event_study(event_panel(), events([100, 300]), window=(-5, 15), n_boot=100)
+    assert set(study["side"]) == {"long"}  # no short clusters given
+    assert set(study["series"]) == {"spot_bps", "basis_bps"}
+    spot = study[study["series"] == "spot_bps"].set_index("offset_min")
+    assert spot.loc[0, "mean"] == pytest.approx(0.0)
+    assert spot.loc[0, "n"] == 2
+
+
+def test_placebo_events_are_big_moves_without_an_oi_drop_away_from_clusters():
+    panel = market_panel(days=1)
+    rng = np.random.default_rng(1)
+    panel["perp_close"] = 100.0 * np.exp(np.cumsum(rng.normal(0, 1e-5, len(panel))))  # tiny moves
+    for minute in (204, 704):  # big jumps at the end of the bars 200-204 and 700-704
+        panel.loc[minute:, "perp_close"] *= 1.01
+    # Open interest falls a little at every reading, except over the bars 200-204, 400-404 and 700-704
+    stamps = np.arange(-5, 1440, 5)  # every reading; the one stamped s is shown from minute s + 5
+    steps = np.where(np.isin(stamps, [205, 405, 705]), 0.0, 0.1)  # no fall into these readings
+    open_interest = 1000.0 - np.cumsum(steps)
+    stamp = np.arange(len(panel)) // 5 * 5 - 5
+    panel["metrics_time"] = pd.array(JAN_1_MS + stamp * MINUTE, dtype="Int64")
+    panel["sum_open_interest"] = open_interest[(stamp + 5) // 5]
+    panel["sum_open_interest_value"] = panel["sum_open_interest"] * 100
+    placebo = placebo_events(panel, events([710]))  # a cluster 10 minutes after the second jump
+    assert list(placebo["start"]) == [JAN_1_MS + 200 * MINUTE]  # 400 has no big move, 700 is near a cluster
+    assert list(placebo["side"]) == ["short"]  # the price rose
