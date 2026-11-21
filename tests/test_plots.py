@@ -112,3 +112,105 @@ def test_figure_9_writes_its_file(tmp_path):
     path = plots.figure_9(study, study.assign(n=500), {"figures_dir": tmp_path, "symbol": "TESTUSDT"}, suffix="_q0.5")
     assert path.name == "fig09_event_study_TESTUSDT_q0.5.png"
     assert path.exists()
+
+# ---------- Figures 11 and 12 (results) ----------
+
+RESULTS_CFG = {"symbol": "TESTUSDT", "horizon_minutes": 15}
+
+
+def clark_west_example():
+    """Shaped like evaluate.clark_west_table: two models, two folds and the pooled row."""
+    rows = []
+    for model, gains in (("ridge", [-0.002, 0.001, -0.0005]), ("boosting", [0.003, -0.001, 0.001])):
+        for fold, gain in zip([1, 2, "all"], gains):
+            rows.append({"model": model, "fold": fold, "rows": 1000, "r2_gain": gain, "cw_stat": 1.0,
+                         "p_value": 0.01 if fold == "all" else 0.03 if gain > 0.002 else 0.4, "p_holm": 0.5 if fold == "all" else np.nan})
+    return pd.DataFrame(rows)
+
+
+IMPORTANCE = {"b_small": 1e-5, "b_mid": 2e-5, "b_big": 3e-5}
+
+
+def interpretation_example():
+    """Shaped like evaluate.coefficient_table and permutation_importance_table."""
+    coefficients = pd.DataFrame({
+        "feature": ["const", "a_ret_5", "b_small", "b_big", "b_mid"],
+        "block": [np.nan, "A", "B", "B", "B"],
+        "coef": [1e-5, 2e-4, 1e-5, -3e-4, 1e-4],
+        "hac_se": 5e-5, "t": 1.0, "p_value": 0.3,
+        "ci_low": [0, 1e-4, -9e-5, -4e-4, 0], "ci_high": [2e-5, 3e-4, 1.1e-4, -2e-4, 2e-4],
+        "p_holm": [np.nan, np.nan, 0.9, 0.01, 0.4],
+    })
+    rows = []
+    for model in ("ridge", "boosting"):
+        for fold in (1, 2, "all"):
+            for feature in ("b_small", "b_big", "b_mid", "a_ret_5"):
+                rows.append({"model": model, "task": "regression", "fold": fold, "feature": feature,
+                             "importance": IMPORTANCE.get(feature, 1e-5), "importance_std": 1e-6,
+                             "importance_min": 0.0, "importance_max": 4e-5, "block": "A" if feature.startswith("a_") else "B"})
+    return coefficients, pd.DataFrame(rows)
+
+
+def capture_figure(monkeypatch):
+    """Keep the figure plots.save_figure receives, instead of closing it, to check what it shows."""
+    kept = {}
+
+    def keep(fig, name, cfg):
+        kept["fig"], kept["name"] = fig, name
+        return name
+    monkeypatch.setattr(plots, "save_figure", keep)
+    return kept
+
+
+def test_figure_11_writes_the_file_named_by_symbol_and_horizon(tmp_path):
+    path = plots.figure_11(clark_west_example(), {**RESULTS_CFG, "figures_dir": tmp_path})
+    assert path.exists()
+    assert path.name == "fig11_forecast_gain_TESTUSDT_h15.png"
+
+
+def test_figure_11_lists_folds_by_test_month_with_the_pooled_row_last(monkeypatch):
+    kept = capture_figure(monkeypatch)
+    folds = pd.DataFrame({"fold": [1, 2], "test_first": ["2026-03-01 00:20", "2026-04-01 00:20"]})
+    saved = clark_west_example().astype({"fold": str})  # a CSV read back gives the folds as text
+    plots.figure_11(saved, RESULTS_CFG, folds=folds)
+    labels = [t.get_text() for t in kept["fig"].axes[0].get_yticklabels()]
+    assert labels == ["Fold 1: 2026-03", "Fold 2: 2026-04", "All folds (pooled)"]
+
+
+def test_figure_11_fills_only_the_markers_below_alpha(monkeypatch):
+    kept = capture_figure(monkeypatch)
+    plots.figure_11(clark_west_example(), RESULTS_CFG)
+    filled = [tuple(c.get_facecolor()[0][:3]) != (1.0, 1.0, 1.0) for c in kept["fig"].axes[0].collections]
+    assert sum(filled) == 1  # only boosting on fold 1: the pooled rows use Holm p = 0.5, not the raw 0.01
+    texts = [t.get_text() for t in kept["fig"].axes[0].texts]
+    assert texts.count("Holm p = 0.50") == 2 and "p = 0.01" not in texts
+
+
+def test_figure_12_writes_the_file_named_by_symbol_and_horizon(tmp_path):
+    path = plots.figure_12(*interpretation_example(), {**RESULTS_CFG, "figures_dir": tmp_path})
+    assert path.exists()
+    assert path.name == "fig12_perp_features_TESTUSDT_h15.png"
+
+
+def test_figure_12_shows_only_perp_features_largest_coefficient_on_top_in_both_panels(monkeypatch):
+    kept = capture_figure(monkeypatch)
+    plots.figure_12(*interpretation_example(), RESULTS_CFG)
+    left, right = kept["fig"].axes
+    labels = [t.get_text() for t in left.get_yticklabels()]
+    assert labels == ["b_small", "b_mid", "b_big"]  # barh draws from the bottom up
+    assert left.get_shared_y_axes().joined(left, right)  # same rows, labelled once on the left
+    assert len(right.patches) == 2 * 3  # one bar per model and perp feature, block A left out
+    ridge = sorted(right.patches[:3], key=lambda bar: bar.get_y())  # bottom row first
+    assert [round(bar.get_width() / plots.R2_PP, 8) for bar in ridge] == [IMPORTANCE[f] for f in labels]
+
+
+def test_figures_11_12_draw_from_the_tables_run_ablation_saved(tmp_path):
+    from src.config import load_config
+    from src.evaluate import run_ablation
+    from tests.test_ablation import GRIDS, MODELS, synthetic_panel
+
+    cfg = load_config(data_dir=tmp_path / "data", tables_dir=tmp_path / "tables", figures_dir=tmp_path / "figures")
+    run_ablation(cfg, synthetic_panel(), ["a1"], ["b1"], "SYM", "s", "e", models=MODELS, grids=GRIDS)
+    paths = plots.figures_11_12(cfg, symbol="SYM")
+    assert [p.name for p in paths] == ["fig11_forecast_gain_SYM_h15.png", "fig12_perp_features_SYM_h15.png"]
+    assert all(p.exists() for p in paths)
