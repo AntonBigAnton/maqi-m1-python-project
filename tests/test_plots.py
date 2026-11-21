@@ -4,6 +4,7 @@ matplotlib.use("Agg")  # draw without opening a window
 import matplotlib.pyplot as plt
 import pandas as pd
 import pytest
+import numpy as np
 
 from src import plots
 
@@ -73,4 +74,28 @@ def test_figures_4_and_5_write_their_files(tmp_path):
         plots.figure_5(descriptive.acf_table(panel, max_lag=10), cfg),
     ]
     assert [p.name for p in paths] == ["fig04_returns_TESTUSDT.png", "fig05_acf_TESTUSDT.png"]
+    assert all(p.exists() for p in paths)
+
+
+def test_figures_6_7_and_10_write_their_files(tmp_path):
+    from src import descriptive
+    from tests.test_descriptive import JAN_1_MS, market_panel
+
+    cfg = {"figures_dir": tmp_path, "symbol": "TESTUSDT"}
+    panel = market_panel()
+    panel["perp_vwap"] = panel["spot_vwap"] * (1 + np.linspace(0, 1e-3, len(panel)))  # a moving basis
+    panel["funding_time"] = pd.array([JAN_1_MS] * len(panel), dtype="Int64")
+    panel["funding_rate"] = 0.0001
+    panel["metrics_time"] = pd.array(panel["open_time"] // 300_000 * 300_000, dtype="Int64")
+    panel["sum_open_interest_value"] = 8e9
+    clusters = pd.DataFrame({"start": [JAN_1_MS + 600 * 60_000]})
+    features = pd.DataFrame({"a_ret_1": [0.1, 0.2, 0.4], "b_flow_5": [0.3, 0.1, 0.0]})
+    paths = [
+        plots.figure_6(descriptive.basis_over_time(panel), clusters, descriptive.basis_half_life(panel), cfg),
+        plots.figure_7(descriptive.leverage_series(panel), cfg),
+        plots.figure_10(features.corr(), cfg),
+    ]
+    assert [p.name for p in paths] == [
+        "fig06_basis_TESTUSDT.png", "fig07_funding_oi_TESTUSDT.png", "fig10_feature_corr_TESTUSDT.png",
+    ]
     assert all(p.exists() for p in paths)

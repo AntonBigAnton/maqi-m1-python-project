@@ -4,6 +4,7 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 from scipy import stats
+import pandas as pd
 
 # Fixed colours
 SPOT_COLOUR = "#1f77b4"  # blue
@@ -192,3 +193,60 @@ def figure_5(acf, cfg):
     fig.suptitle(f"{cfg['symbol']}: autocorrelation of 1-minute spot returns")
     fig.tight_layout()
     return save_figure(fig, f"fig05_acf_{cfg['symbol']}", cfg)
+
+
+def figure_6(basis, clusters, half_life, cfg):
+    """Figure 6: basis over time (5-minute means) with suspected deleveraging clusters marked.
+
+    basis comes from descriptive.basis_over_time, clusters from descriptive.deleveraging_clusters,
+    half_life from descriptive.basis_half_life.
+    """
+    apply_style()
+    fig, ax = plt.subplots(figsize=(12, 5))
+    smooth = basis.resample("5min").mean()
+    ax.plot(smooth.index, smooth, color=PERP_COLOUR, linewidth=0.6, label="Basis, 5-min mean")
+    starts = pd.to_datetime(clusters["start"], unit="ms", utc=True)
+    marked = smooth.reindex(starts.dt.floor("5min"))
+    ax.scatter(marked.index, marked, **CLUSTER_MARKER, label="Suspected deleveraging cluster")
+    ax.axhline(0, color="black", linewidth=0.8)
+    ax.legend(loc="best")
+    label_axes(ax, "Time", "Basis", ("UTC", "bps"))
+    row = half_life.iloc[0]
+    ax.set_title(f"{cfg['symbol']}: basis over time (AR(1) half-life {row['half_life_min']:.1f} min)")
+    return save_figure(fig, f"fig06_basis_{cfg['symbol']}", cfg)
+
+
+def figure_7(leverage, cfg):
+    """Figure 7: funding rate (top) and open interest (bottom) on the same time axis."""
+    apply_style()
+    fig, (top, bottom) = plt.subplots(2, 1, sharex=True, figsize=(12, 7))
+    funding = leverage["funding_bps"]
+    top.step(funding.index, funding, where="post", color=PERP_COLOUR, label="Funding rate")
+    top.axhline(0, color="black", linewidth=0.8)
+    top.legend(loc="best")
+    label_axes(top, "Time", "Funding rate", ("UTC", "bps per settlement"))
+    top.set_xlabel("")
+    open_interest = leverage["open_interest_bn"]
+    bottom.plot(open_interest.index, open_interest, color=PERP_COLOUR, linewidth=0.8, label="Open interest")
+    bottom.legend(loc="best")
+    label_axes(bottom, "Time", "Open interest", ("UTC", "billion USDT"))
+    fig.suptitle(f"{cfg['symbol']}: funding and open interest")
+    fig.tight_layout()
+    return save_figure(fig, f"fig07_funding_oi_{cfg['symbol']}", cfg)
+
+
+def figure_10(corr, cfg):
+    """Figure 10: correlation matrix of the block A and B features (from features.build_features)."""
+    apply_style()
+    size = max(8, 0.35 * len(corr))
+    fig, ax = plt.subplots(figsize=(size, size))
+    image = ax.imshow(corr.to_numpy(), cmap="RdBu_r", vmin=-1, vmax=1)
+    ax.set_xticks(range(len(corr)))
+    ax.set_xticklabels(corr.columns, rotation=90, fontsize=8)
+    ax.set_yticks(range(len(corr)))
+    ax.set_yticklabels(corr.index, fontsize=8)
+    ax.grid(False)
+    fig.colorbar(image, ax=ax, shrink=0.8, label="Correlation [–]")
+    ax.set_title(f"{cfg['symbol']}: correlation of block A and B features")
+    fig.tight_layout()
+    return save_figure(fig, f"fig10_feature_corr_{cfg['symbol']}", cfg)

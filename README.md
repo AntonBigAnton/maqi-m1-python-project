@@ -172,6 +172,17 @@ Does the perp move before spot (H2)?
 - **Why 5 minutes.** The tests on 260,000 one-minute values are slow; 5-minute bars keep the same behaviour with 52,000 values.
 - `save_table(table, name, cfg)` writes a table as `report/tables/<name>.csv`.
 
+### Perp-specific signals (block D)
+
+| Function | What it gives | Output |
+| --- | --- | --- |
+| `basis_over_time(panel)`, `deleveraging_clusters(panel)` and `basis_half_life(panel)` | The 1-min basis in bps, the suspected deleveraging clusters (full sample), and an AR(1) fit with the basis half-life in minutes | Figure 6, table |
+| `leverage_series(panel)` | Funding rate at each settlement (bps) and open interest at each metrics reading (billion USDT) | Figure 7 |
+| `flow_correlation(panel, lags)` | Correlation of spot and perp signed flow share over each window | Table |
+| `redundant_pairs(corr, threshold=0.9)` | Pairs of block A and B features with \|correlation\| ≥ 0.9, to drop before the models | Figure 10, table |
+
+- **Half-life.** With basis_t = a + φ · basis_{t−1}, a deviation halves in ln(0.5) / ln(φ) minutes.
+
 ## Configuration
 
 Every run parameter (symbol, horizon, sample window, lags, seed, paths) lives in `config.yaml`. Code reads it with `src.config.load_config()`, so nothing in `src/` hardcodes the coin, the horizon or the dates.
@@ -190,6 +201,7 @@ Every figure uses the shared style in `src/plots.py`, so they all look the same 
 | `figure_8(lead_lag, cfg)` | Figure 8 ★: cross-correlation of each perp signal with future spot returns (from `lead_lag_table`), with the ±1.96 / √N band; saved as `fig08_lead_lag_<symbol>.png` |
 | `figure_1`, `figure_2`, `figure_3` | Missing minutes heatmap (day × hour), perp share of traded value over time, intraday volume and volatility; saved as `fig01_…`, `fig02_…`, `fig03_…` |
 | `figure_4`, `figure_5` | Return histograms with a normal overlay and QQ plots; ACF of returns vs absolute returns; saved as `fig04_…`, `fig05_…` |
+| `figure_6`, `figure_7`, `figure_10` | Basis with deleveraging clusters marked; funding and open interest on aligned panels; feature correlation heatmap; saved as `fig06_…`, `fig07_…`, `fig10_…` |
 
 ## Contributing
 

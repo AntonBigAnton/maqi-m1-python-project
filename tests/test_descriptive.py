@@ -4,9 +4,9 @@ import pandas as pd
 import pytest
 
 from src.descriptive import (
-    acf_table, cross_correlation, five_minute_series, granger, granger_pair, horizon_returns, intraday_profile,
-    lead_lag_signals, lead_lag_table, missing_minutes, return_moments, save_table, stationarity_tests,
-    tracking_stats, volume_share,
+    acf_table, basis_half_life, cross_correlation, five_minute_series, flow_correlation, granger, granger_pair,
+    horizon_returns, intraday_profile, lead_lag_signals, lead_lag_table, leverage_series, missing_minutes,
+    redundant_pairs, return_moments, save_table, stationarity_tests, tracking_stats, volume_share,
 )
 
 MINUTE = 60_000
@@ -199,3 +199,45 @@ def test_save_table_writes_a_csv(tmp_path):
     path = save_table(pd.DataFrame({"a": [1, 2]}), "example", {"tables_dir": tmp_path})
     assert path == tmp_path / "example.csv"
     assert path.exists()
+
+
+# ---------- Block D: perp-specific signals (#22) ----------
+
+def test_basis_half_life_of_an_ar1():
+    rng = np.random.default_rng(0)
+    basis = np.zeros(50_000)
+    for t in range(1, len(basis)):
+        basis[t] = 0.9 * basis[t - 1] + rng.normal()
+    panel = pd.DataFrame({"spot_vwap": 100.0, "perp_vwap": 100.0 * (1 + basis / 10_000)})
+    row = basis_half_life(panel).iloc[0]
+    assert row["phi"] == pytest.approx(0.9, abs=0.01)
+    assert row["half_life_min"] == pytest.approx(np.log(0.5) / np.log(0.9), rel=0.05)  # about 6.6 minutes
+
+
+def test_leverage_series_keeps_one_value_per_reading():
+    panel = market_panel(days=1)
+    panel["funding_time"] = pd.array(JAN_1_MS + (np.arange(len(panel)) // 480) * 480 * MINUTE, dtype="Int64")
+    panel["funding_rate"] = 0.0001
+    panel["metrics_time"] = pd.array(JAN_1_MS + (np.arange(len(panel)) // 5) * 5 * MINUTE, dtype="Int64")
+    panel["sum_open_interest_value"] = 8e9
+    leverage = leverage_series(panel)
+    assert len(leverage["funding_bps"]) == 3  # one settlement every 8 hours
+    assert np.allclose(leverage["funding_bps"], 1.0)
+    assert len(leverage["open_interest_bn"]) == 1440 // 5
+    assert np.allclose(leverage["open_interest_bn"], 8.0)
+
+
+def test_flow_correlation_of_identical_flows_is_one():
+    panel = market_panel(days=1)
+    panel["perp_signed_volume"] = panel["spot_signed_volume"] * 3  # perp volume is 3x spot volume
+    table = flow_correlation(panel, [1, 5])
+    assert list(table["window_min"]) == [1, 5]
+    assert np.allclose(table["corr"], 1.0)
+
+
+def test_redundant_pairs_flags_twins_only():
+    rng = np.random.default_rng(0)
+    x = rng.normal(size=1000)
+    features = pd.DataFrame({"x": x, "twice_x": 2 * x, "noise": rng.normal(size=1000)})
+    pairs = redundant_pairs(features.corr(), threshold=0.9)
+    assert list(zip(pairs["feature_1"], pairs["feature_2"])) == [("x", "twice_x")]
