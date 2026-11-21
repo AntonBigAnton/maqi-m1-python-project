@@ -122,6 +122,17 @@ Row `open_time = t` holds the candles of the minute starting at *t*. Columns:
 | `b_oi_chg` | % change in open interest since the previous reading | % | `sum_open_interest`, `metrics_time` | Positions opened or closed |
 | `b_toptrader_ls`, `b_ls`, `b_taker_ratio` | log of the ratio | log ratio | `metrics` ratio columns | Positioning skew |
 | `b_funding_bps` | funding rate × 10⁴ | bps | `funding_rate` | Slow context on the crowded side |
+| `b_delev_long_{L}` | potential long liquidations that became known in the last L minutes | count | `sum_open_interest`, `metrics_time`, `perp_close`, `perp_signed_volume`, `perp_volume` | Forced selling on the perp may spill into spot |
+| `b_delev_short_{L}` | same, for potential short liquidations | count | same | Forced buying on the perp may spill into spot |
+
+### Potential liquidations (deleveraging proxy)
+
+Binance does not publish liquidations for USD-M perps, so they are inferred. A 5-minute bar is a potential liquidation when open interest falls to its 1% quantile or lower **and** either |perp return| or |perp flow share| reaches its 95% quantile (spec section 6). The side is long when the price fell, short when it rose.
+
+- `deleveraging_events(panel, oi_q)` lists them, with the open interest drop in % and USD. `cluster_events(events)` merges those at most 30 minutes apart, dated at the first.
+- `sensitivity_table(panel)` gives the counts at the 0.5%, 1% and 2% cut-offs.
+- **Cut-offs.** Full sample for the descriptive analysis; `"past"` (earlier bars only) for the model features by default; or fixed values from `deleveraging_thresholds` on training data.
+- **Timing.** A bar's open interest change runs to the reading stamped at its end, as in the spec's table. It is only used once that reading is known, 10 minutes after the bar starts.
 
 ## Descriptive analysis: lead-lag
 
