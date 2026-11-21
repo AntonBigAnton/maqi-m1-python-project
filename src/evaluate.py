@@ -1,5 +1,6 @@
 # walk-forward, metrics, Clark-West, DM
 from dataclasses import dataclass
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -8,7 +9,10 @@ from sklearn.metrics import balanced_accuracy_score, f1_score, log_loss
 from sklearn.preprocessing import StandardScaler
 from statsmodels.stats.multitest import multipletests
 
-from src.models import DOWN, FLAT, TARGET, UP, VOL_SCALE, classify, fit_flat_threshold
+from src.models import (
+    CLASSIFICATION_MODELS, DEFAULT_GRIDS, DOWN, FLAT, REGRESSION_MODELS, TARGET, UP, VOL_SCALE,
+    classify, feature_sets, fit_flat_threshold, fit_predict,
+)
 from src.schemas import MS_PER_MINUTE
 
 # Walk-forward validation (spec §9). The window is cut into calendar months (UTC). Fold k tests
@@ -305,3 +309,62 @@ def clark_west_table(predictions, models, lags, alpha=0.05):
     table["h1_supported"] = pd.Series(pd.NA, index=table.index, dtype="boolean")
     table.loc[pooled, "h1_supported"] = table.loc[pooled, "p_holm"] < alpha
     return table
+
+
+# Walk-forward fits (spec §8-9): every model on every feature set and fold, tuned on the tune
+# month, refitted on the whole training window and scored on the test month.
+
+
+def tuning_score(task, data, forecast):
+    """Score used to choose hyperparameters on the tune month: higher is better."""
+    if task == "regression":
+        return oos_r2(data.y_eval, forecast)
+    return -log_loss(data.class_eval, forecast, labels=list(CLASS_PROBABILITIES))
+
+
+def walk_forward_predictions(frame, folds, block_a, block_b, flat_share, task, models=None, grids=None):
+    """Test-month predictions of every model x feature set x fold, and the hyperparameters chosen.
+
+    frame is a models.model_frame and folds come from walk_forward_splits on its open_time. For
+    each fold, every candidate in a model's grid is fitted on the fit months and scored on the
+    tune month (R² for regression, log loss for classes); the best is refitted on all training
+    months and forecasts the test month. Scaler and class threshold are fitted on the rows each
+    model is trained on (fold_data). Returns (predictions, tuning), predictions in the
+    PREDICTION_KEYS + REGRESSION_COLUMNS / CLASSIFICATION_COLUMNS format.
+    """
+    if task not in ("regression", "classification"):
+        raise ValueError(f"task must be 'regression' or 'classification', got {task!r}")
+    models = list(models or (REGRESSION_MODELS if task == "regression" else CLASSIFICATION_MODELS))
+    grids = {**DEFAULT_GRIDS, **(grids or {})}
+    predictions, tuning = [], []
+    for feature_set, columns in feature_sets(block_a, block_b).items():
+        for fold in folds:
+            tune_data = fold_data(frame, fold.fit, fold.tune, columns, flat_share)
+            test_data = fold_data(frame, fold.train, fold.test, columns, flat_share)
+            keys = {"feature_set": feature_set, "fold": fold.number}
+            for model in models:
+                scores = [tuning_score(task, tune_data, fit_predict(model, params, tune_data)) for params in grids[model]]
+                best = grids[model][int(np.argmax(scores))]
+                tuning.append({"model": model, **keys, "params": best, "tune_score": max(scores)})
+                forecast = fit_predict(model, best, test_data)
+                rows = pd.DataFrame({"model": model, **keys, "open_time": frame["open_time"].iloc[fold.test].to_numpy()})
+                if task == "regression":
+                    rows["y_true"], rows["y_pred"] = test_data.y_eval.to_numpy(), forecast
+                else:
+                    rows["class_true"] = test_data.class_eval
+                    rows[list(CLASS_PROBABILITIES.values())] = forecast
+                predictions.append(rows)
+    return pd.concat(predictions, ignore_index=True), pd.DataFrame(tuning)
+
+
+def predictions_path(data_dir, symbol, start, end, horizon_minutes, task):
+    """Parquet path of one run's test-month predictions."""
+    return Path(data_dir) / "predictions" / f"{symbol}_{start}_{end}_h{horizon_minutes}_{task}.parquet"
+
+
+def save_predictions(predictions, path):
+    """Save a prediction table, creating its folder; returns the path."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    predictions.to_parquet(path, index=False)
+    return path
