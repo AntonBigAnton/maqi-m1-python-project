@@ -92,6 +92,37 @@ Row `open_time = t` holds the candles of the minute starting at *t*. Columns:
 - **Same columns on every run.** If an optional dataset was not downloaded, its columns are still there, left empty.
 - **Check.** The run stops if the median gap between perp and spot closes is above 1%, which would mean a join or unit bug (for BTCUSDT in January 2026 it is 4.5 bps).
 
+## Features
+
+`build_features(panel, cfg)` in `src/features.py` adds both blocks to the panel. `BLOCK_A` and `BLOCK_B` list their column names.
+
+- **Lags.** `feature_lags(horizon)` gives `[1, 5, 15, 60]` for 15 minutes. Block A uses all of them; block B uses the middle ones (5, 15) to stay near 15 features per block.
+- **No look-ahead.** Candle features on row t only use minutes up to t − 1. Metrics and funding are attached by the panel once known, so they are used as is.
+- **No filling.** Any window containing a missing minute gives NaN.
+
+### Block A: spot only (the baseline)
+
+| Name | Formula | Unit | Source columns | Why |
+| --- | --- | --- | --- | --- |
+| `a_ret_{L}` | log VWAP(t−1) − log VWAP(t−1−L) | log return | `spot_vwap` | Spot momentum or reversal |
+| `a_flow_{L}` | Σ signed volume / Σ volume over L | fraction (−1 to 1) | `spot_signed_volume`, `spot_volume` | Spot buying pressure |
+| `a_rv_{L}` | std of 1-min returns over L (L ≥ 5) | log return | `spot_vwap` | Volatility regime |
+| `a_count_rel`, `a_vol_rel` | value / its 60-min mean | ratio | `spot_count`, `spot_volume` | Unusual activity |
+| `a_hour_sin`, `a_hour_cos` | sin, cos(2π · hour / 24) | – | `open_time` | Intraday cycle |
+
+### Block B: perp (its added value answers H1)
+
+| Name | Formula | Unit | Source columns | Why |
+| --- | --- | --- | --- | --- |
+| `b_flow_{L}` | as `a_flow_{L}`, on the perp | fraction (−1 to 1) | `perp_signed_volume`, `perp_volume` | Perp buying pressure may lead spot |
+| `b_flow_div_{L}` | `b_flow_{L}` − spot flow over L | fraction | perp and spot flow columns | Perp pressure spot has not shown yet |
+| `b_basis_bps` | (perp VWAP / spot VWAP − 1) × 10⁴ | bps | `perp_vwap`, `spot_vwap` | Spot tends to close the gap |
+| `b_basis_chg_{L}` | change in `b_basis_bps` over L | bps | `perp_vwap`, `spot_vwap` | Fresh perp pressure |
+| `b_lead_{L}` | perp log return − spot log return over L | log return | `perp_vwap`, `spot_vwap` | Perp moved first, spot may follow |
+| `b_oi_chg` | % change in open interest since the previous reading | % | `sum_open_interest`, `metrics_time` | Positions opened or closed |
+| `b_toptrader_ls`, `b_ls`, `b_taker_ratio` | log of the ratio | log ratio | `metrics` ratio columns | Positioning skew |
+| `b_funding_bps` | funding rate × 10⁴ | bps | `funding_rate` | Slow context on the crowded side |
+
 ## Targets and walk-forward validation
 
 Targets are in `src/models.py` and the splitter is in `src/evaluate.py` (spec sections 5 and 9). The feature columns are passed in as two lists, `block_a` (spot only) and `block_b` (perp), so this code does not depend on how `src/features.py` builds them.
