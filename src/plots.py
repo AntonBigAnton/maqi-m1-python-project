@@ -3,8 +3,10 @@ from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
-from scipy import stats
 import pandas as pd
+from scipy import stats
+
+from src.features import METRICS_EVERY_MINUTES
 
 # Fixed colours
 SPOT_COLOUR = "#1f77b4"  # blue
@@ -250,3 +252,42 @@ def figure_10(corr, cfg):
     ax.set_title(f"{cfg['symbol']}: correlation of block A and B features")
     fig.tight_layout()
     return save_figure(fig, f"fig10_feature_corr_{cfg['symbol']}", cfg)
+
+
+def figure_9(study, placebo, cfg, suffix=""):
+    """Figure 9: mean spot return and basis change around suspected deleveraging clusters.
+
+    study and placebo come from descriptive.event_study. Columns: long and short clusters; rows:
+    spot return and basis change since time 0 (end of the event bar), with 95% bootstrap bands.
+    The grey band before 0 is the event bar itself; only the path after 0 is evidence of a lead.
+    suffix tells apart the appendix versions at other thresholds (e.g. "_q0.5").
+    """
+    apply_style()
+    fig, axes = plt.subplots(2, 2, sharex=True, figsize=(12, 8))
+    rows = (("spot_bps", "Spot return since time 0", SPOT_COLOUR), ("basis_bps", "Basis change since time 0", PERP_COLOUR))
+    for column, side in enumerate(("long", "short")):
+        for row, (series, ylabel, colour) in enumerate(rows):
+            ax = axes[row, column]
+            table = study[(study["side"] == side) & (study["series"] == series)]
+            if table.empty:
+                ax.set_title(f"No {side} clusters")
+                continue
+            ax.axvspan(-METRICS_EVERY_MINUTES, 0, color="grey", alpha=0.15, label="Event bar")
+            ax.fill_between(table["offset_min"], table["low"], table["high"], color=colour, alpha=0.25,
+                            label="95% bootstrap band")
+            ax.plot(table["offset_min"], table["mean"], color=colour,
+                    label=f"Clusters (n = {table['n'].iloc[0]})")
+            reference = placebo[(placebo["side"] == side) & (placebo["series"] == series)]
+            if not reference.empty:
+                ax.plot(reference["offset_min"], reference["mean"], color="grey", linestyle="--",
+                        label=f"Placebo: big move, no OI drop (n = {reference['n'].iloc[0]})")
+            ax.axvline(0, color="black", linewidth=0.8)
+            ax.axhline(0, color="black", linewidth=0.8)
+            ax.legend(loc="best", fontsize=8)
+            label_axes(ax, "Minutes from the end of the event bar", ylabel, ("min", "bps"))
+            if row == 0:
+                ax.set_title(f"Suspected {side} deleveraging" + (" (price fell)" if side == "long" else " (price rose)"))
+                ax.set_xlabel("")
+    fig.suptitle(f"{cfg['symbol']}: event study around suspected deleveraging clusters")
+    fig.tight_layout()
+    return save_figure(fig, f"fig09_event_study_{cfg['symbol']}{suffix}", cfg)

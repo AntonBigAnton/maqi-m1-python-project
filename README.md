@@ -151,6 +151,13 @@ Does the perp move before spot (H2)?
 - **Significance vs size.** With about 260,000 minutes almost any effect is significant, so report `delta_r2`, not only the p-value.
 - **No filling.** A missing minute leaves its returns empty, and pairs with an empty value are skipped.
 
+**Event study around suspected deleveraging clusters (Figure 9 ★).** `event_study(panel, clusters, window=(-30, 60))` averages the spot return and the basis change around each cluster, by side (long: price fell; short: price rose), with 95% bootstrap bands that resample whole clusters.
+
+- **Time 0** is the end of the cluster's first 5-minute bar. The bar itself (shaded) contains both the perp and the spot move, so only the path after 0 is evidence of a lead.
+- **Paths** use minute closes: spot return and basis change since time 0, in bps.
+- **Placebo.** `placebo_events(panel, clusters)` picks bars with an equally big perp move but no fall in open interest, away from any cluster. If the cluster paths look like the placebo, a big move alone explains them.
+- Figure 9 uses the 1% open interest threshold; the appendix repeats it at 0.5% and 2%. Clusters are at least 30 minutes apart, but their windows can overlap.
+
 ### Data quality and market structure (blocks A–B)
 
 | Function | What it gives | Figure |
@@ -202,6 +209,7 @@ Every figure uses the shared style in `src/plots.py`, so they all look the same 
 | `figure_1`, `figure_2`, `figure_3` | Missing minutes heatmap (day × hour), perp share of traded value over time, intraday volume and volatility; saved as `fig01_…`, `fig02_…`, `fig03_…` |
 | `figure_4`, `figure_5` | Return histograms with a normal overlay and QQ plots; ACF of returns vs absolute returns; saved as `fig04_…`, `fig05_…` |
 | `figure_6`, `figure_7`, `figure_10` | Basis with deleveraging clusters marked; funding and open interest on aligned panels; feature correlation heatmap; saved as `fig06_…`, `fig07_…`, `fig10_…` |
+| `figure_9(study, placebo, cfg, suffix="")` | Figure 9 ★: event study by side, spot return and basis change since the end of the event bar, with bootstrap bands and the placebo path; saved as `fig09_event_study_<symbol><suffix>.png` |
 
 ## Contributing
 

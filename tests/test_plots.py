@@ -99,3 +99,16 @@ def test_figures_6_7_and_10_write_their_files(tmp_path):
         "fig06_basis_TESTUSDT.png", "fig07_funding_oi_TESTUSDT.png", "fig10_feature_corr_TESTUSDT.png",
     ]
     assert all(p.exists() for p in paths)
+
+
+def test_figure_9_writes_its_file(tmp_path):
+    rows = []
+    for side in ("long", "short"):
+        for series in ("spot_bps", "basis_bps"):
+            for offset in range(-5, 11):
+                rows.append({"side": side, "series": series, "offset_min": offset,
+                             "mean": 0.1 * offset, "low": 0.1 * offset - 1, "high": 0.1 * offset + 1, "n": 40})
+    study = pd.DataFrame(rows)
+    path = plots.figure_9(study, study.assign(n=500), {"figures_dir": tmp_path, "symbol": "TESTUSDT"}, suffix="_q0.5")
+    assert path.name == "fig09_event_study_TESTUSDT_q0.5.png"
+    assert path.exists()
