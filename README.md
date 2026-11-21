@@ -235,7 +235,7 @@ Forecasts are made every minute for a 15-minute horizon, so consecutive errors o
 
 **Reading the figure 12 tables.** Both are descriptive, not causal:
 - **Coefficients** are fitted in-sample on every usable minute. A coefficient is the change in the forecast 15-minute return for a one-standard-deviation move in the feature.
-- **Coefficient p-values** are individually valid, but ten block B coefficients are tested at once, so about one is expected below 5% by chance. Read `p_holm`, which adjusts for that.
+- **Coefficient p-values** are individually valid, but every block B coefficient is tested at once: with ten or more of them, about one is expected below 5% by chance. Read `p_holm`, which adjusts for that.
 - **Permutation importance** is computed for ridge (the best linear model) and boosting (the level 2 model). Each is refitted on each fold's training months with its tuned hyperparameters. It then measures how much test-month R² drops when one feature is shuffled. A feature the model doesn't use scores about 0. Correlated features share their importance, because shuffling one leaves the information in the others.
 
 Tables are named by symbol and horizon, so a smoke test on another symbol never overwrites them. Nothing is cached: every call rebuilds the results from the data passed in. On the real BTCUSDT panel it takes about 2 minutes.

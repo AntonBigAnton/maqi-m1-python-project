@@ -391,8 +391,8 @@ def coefficient_table(frame, block_a, block_b, lags, rows=None):
     return for a one-standard-deviation move of the feature. In-sample, on every row of the
     model_frame by default (rows restricts it): this is inference on the coefficients, not a
     forecast evaluation. lags should be at least the horizon (overlapping labels).
-    p_holm adjusts the block B p-values for testing every block B coefficient at once: with ten of
-    them, one is expected below 5% by chance alone. It is empty for block A and the constant.
+    p_holm adjusts the block B p-values for testing every block B coefficient at once: with ten or
+    more of them, one is expected below 5% by chance alone. It is empty for block A and the constant.
     """
     columns = feature_sets(block_a, block_b)["A+B"]
     data = frame if rows is None else frame.iloc[rows]
