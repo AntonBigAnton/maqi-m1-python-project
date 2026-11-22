@@ -291,3 +291,147 @@ def figure_9(study, placebo, cfg, suffix=""):
     fig.suptitle(f"{cfg['symbol']}: event study around suspected deleveraging clusters")
     fig.tight_layout()
     return save_figure(fig, f"fig09_event_study_{cfg['symbol']}{suffix}", cfg)
+
+# ---------- Results figures (spec section 10, H1) ----------
+
+# Each model keeps its colour and marker in every results figure, so colour is never the only cue.
+# Blue, orange and red are left to spot, perp and clusters.
+MODEL_STYLES = {
+    "ridge": {"color": "#2ca02c", "marker": "o", "label": "Ridge"},
+    "lasso": {"color": "#9467bd", "marker": "s", "label": "Lasso"},
+    "boosting": {"color": "#8c564b", "marker": "^", "label": "Boosting"},
+}
+R2_PP = 100  # R² is shown in percentage points: an R² gain of 0.001 is 0.1 pp
+RETURN_BPS = 1e4  # log returns are shown in basis points
+
+
+def model_style(model):
+    """Colour, marker and label of a model; models not in MODEL_STYLES get grey circles."""
+    return MODEL_STYLES.get(model, {"color": "grey", "marker": "o", "label": model})
+
+
+def fold_labels(folds):
+    """'Fold n: YYYY-MM' for each fold of evaluate.fold_table (or its saved CSV), keyed by fold number as text."""
+    if folds is None:
+        return {}
+    months = pd.to_datetime(folds["test_first"]).dt.strftime("%Y-%m")
+    return {str(fold): f"Fold {fold}: {month}" for fold, month in zip(folds["fold"], months)}
+
+
+def figure_11(clark_west, cfg, folds=None, alpha=0.05):
+    """Figure 11 ★: out-of-sample R² gain of A + B over A per walk-forward fold, with Clark-West p-values.
+
+    clark_west is evaluate.clark_west_table (or its saved CSV): one row per model and fold plus a
+    pooled row (fold "all"). Each dot is one model on one test month; right of 0 means the perp
+    features helped. The printed p-value is the one-sided Clark-West test of that fold; on the
+    pooled row it is the Holm-adjusted p-value that answers H1. Filled markers are below alpha.
+    folds (evaluate.fold_table) labels each fold with its test month.
+    """
+    apply_style()
+    table = clark_west.assign(fold=clark_west["fold"].astype(str))
+    per_fold = sorted((f for f in table["fold"].unique() if f != "all"), key=int)
+    rows = per_fold + ["all"]
+    y = {fold: i for i, fold in enumerate(per_fold)}
+    y["all"] = len(per_fold) + 0.5  # a small gap sets the pooled answer apart
+    labels = {**{f: f"Fold {f}" for f in per_fold}, **fold_labels(folds), "all": "All folds (pooled)"}
+
+    models = list(dict.fromkeys(table["model"]))
+    offsets = np.linspace(-0.25, 0.25, len(models)) if len(models) > 1 else [0.0]
+    fig, ax = plt.subplots(figsize=(10, 1.1 * len(rows) + 1.5))
+    for offset, model in zip(offsets, models):
+        style = model_style(model)
+        for row in table[table["model"] == model].itertuples():
+            pooled = row.fold == "all"
+            p = row.p_holm if pooled else row.p_value
+            x, height = row.r2_gain * R2_PP, y[row.fold] + offset
+            ax.scatter(x, height, s=90 if pooled else 60, marker=style["marker"], color=style["color"],
+                       facecolors=style["color"] if p < alpha else "white", linewidths=1.5, zorder=3)
+            text = f"Holm p = {p:.2f}" if pooled else f"p = {p:.2f}"
+            ax.annotate(text, (x, height), xytext=(8, 0), textcoords="offset points", va="center", fontsize=8)
+    ax.axvline(0, color="black", linewidth=0.8)
+    ax.axhline(len(per_fold) - 0.25, color="grey", linewidth=0.6, linestyle=":")
+    ax.set_yticks([y[f] for f in rows])
+    ax.set_yticklabels([labels[f] for f in rows])
+    ax.set_ylim(y["all"] + 0.6, -0.6)  # first fold at the top, pooled row at the bottom
+    left, right = ax.get_xlim()
+    ax.set_xlim(left, right + 0.25 * (right - left))  # room for the p-values right of the dots
+
+    handles = [plt.Line2D([], [], linestyle="", marker=model_style(m)["marker"], color=model_style(m)["color"],
+                          markersize=8, label=model_style(m)["label"]) for m in models]
+    handles += [plt.Line2D([], [], linestyle="", marker="o", color="black", markersize=8, label=f"p < {alpha:g}"),
+                plt.Line2D([], [], linestyle="", marker="o", color="black", markerfacecolor="white", markersize=8,
+                           label=f"p ≥ {alpha:g}")]
+    ax.legend(handles=handles, loc="best")
+    label_axes(ax, "Out-of-sample R² of A + B minus A", "Walk-forward fold", ("pp", "test month"))
+    ax.set_title(f"{cfg['symbol']}, {cfg['horizon_minutes']}-min horizon: do perp features improve the forecast?")
+    return save_figure(fig, f"fig11_forecast_gain_{cfg['symbol']}_h{cfg['horizon_minutes']}", cfg)
+
+
+def figure_12(coefficients, importance, cfg, alpha=0.05):
+    """Figure 12 ★: which perp features drive the forecast, as coefficients (left) and permutation importance (right).
+
+    coefficients is evaluate.coefficient_table and importance evaluate.permutation_importance_table
+    (or their saved CSVs). One row per block B feature, the same order in both panels, sorted by
+    the size of the coefficient. Left: in-sample coefficient of the standardised feature (forecast
+    15-minute return per standard deviation) with its 95% Newey-West interval and Holm p-value.
+    Right: drop in test-month R² when the feature is shuffled, pooled over folds, with the range
+    across folds as the whisker, one bar per model. Both are descriptive, not causal.
+    """
+    apply_style()
+    coefs = coefficients[coefficients["block"] == "B"].copy()
+    coefs = coefs.reindex(coefs["coef"].abs().sort_values().index)  # largest at the top of a barh
+    features = list(coefs["feature"])
+    pooled = importance[(importance["fold"].astype(str) == "all") & (importance["block"] == "B")]
+    models = list(dict.fromkeys(pooled["model"]))
+    positions = np.arange(len(features))
+
+    fig, (left, right) = plt.subplots(1, 2, sharey=True, figsize=(13, 0.45 * len(features) + 2))
+    coef = coefs["coef"].to_numpy() * RETURN_BPS
+    whiskers = np.vstack([coef - coefs["ci_low"].to_numpy() * RETURN_BPS, coefs["ci_high"].to_numpy() * RETURN_BPS - coef])
+    left.barh(positions, coef, xerr=whiskers, color=PERP_COLOUR, alpha=0.8, capsize=3,
+              error_kw={"linewidth": 1}, label="Coefficient, 95% HAC interval")
+    for position, row in zip(positions, coefs.itertuples()):
+        star = " *" if row.p_holm < alpha else ""
+        left.annotate(f"p_Holm = {row.p_holm:.2f}{star}", (1.01, position), xycoords=("axes fraction", "data"),
+                      va="center", fontsize=8)
+    left.axvline(0, color="black", linewidth=0.8)
+    left.set_yticks(positions)
+    left.set_yticklabels(features)
+    left.legend(loc="upper center", bbox_to_anchor=(0.5, -0.09), ncol=2)  # below the panel, never over a bar
+    label_axes(left, "Forecast return per 1 std of the feature", "Perp feature (block B)", ("bps", "name"))
+    left.set_title("OLS coefficients, in-sample on all minutes")
+
+    height = 0.8 / max(len(models), 1)
+    for i, model in enumerate(models):
+        style = model_style(model)
+        table = pooled[pooled["model"] == model].set_index("feature").reindex(features)
+        value = table["importance"].to_numpy() * R2_PP
+        spread = np.vstack([value - table["importance_min"].to_numpy() * R2_PP,
+                            table["importance_max"].to_numpy() * R2_PP - value])
+        shift = (i - (len(models) - 1) / 2) * height
+        right.barh(positions + shift, value, height=height, xerr=spread, color=style["color"], alpha=0.8,
+                   hatch="//" if i % 2 else None, capsize=2, error_kw={"linewidth": 1},
+                   label=f"{style['label']}, range across folds")
+    right.axvline(0, color="black", linewidth=0.8)
+    right.legend(loc="upper center", bbox_to_anchor=(0.5, -0.09), ncol=2)  # below the panel, never over a bar
+    label_axes(right, "Drop in test-month R² when shuffled", "", ("pp", "name"))
+    right.set_ylabel("")
+    right.set_title("Permutation importance, mean over folds")
+
+    fig.suptitle(f"{cfg['symbol']}, {cfg['horizon_minutes']}-min horizon: which perp features carry the signal?")
+    fig.tight_layout()
+    return save_figure(fig, f"fig12_perp_features_{cfg['symbol']}_h{cfg['horizon_minutes']}", cfg)
+
+
+def figures_11_12(cfg, symbol=None):
+    """Draw figures 11 and 12 from the tables evaluate.run_ablation saved; returns both paths.
+
+    symbol defaults to the config's; the horizon is the config's, as in the table names.
+    """
+    from src.evaluate import table_path  # here, so the descriptive figures never load the models
+
+    symbol = symbol or cfg["symbol"]
+    read = lambda name: pd.read_csv(table_path(cfg["tables_dir"], symbol, cfg["horizon_minutes"], name))
+    cfg = {**cfg, "symbol": symbol}
+    return (figure_11(read("clark_west"), cfg, folds=read("folds")),
+            figure_12(read("coefficients"), read("permutation_importance"), cfg))
