@@ -24,6 +24,8 @@ dependencies = [
     # figures
     "matplotlib==3.11.2",
     "seaborn==0.13.2",
+    # report notebook (Jupyter kernel, also used by VS Code)
+    "ipykernel==7.4.0",
 ]
 
 [project.optional-dependencies]

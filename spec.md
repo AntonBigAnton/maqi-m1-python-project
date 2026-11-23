@@ -22,12 +22,12 @@
 
 ## 2. Grading, deliverables and rubric cross-reference
 
-Two graded deliverables, per the instructor's email: the **repo + PDF report**, due Nov 24, 2026 at 23:59 Paris time, worth roughly 2/3 to 3/4 of the grade; and the **defense** on Dec 1, 2026, worth the rest (exact split not yet fixed).
+Two graded deliverables, per the instructor's email: the **repo + report notebook**, due Nov 24, 2026 at 23:59 Paris time, worth roughly 2/3 to 3/4 of the grade; and the **defense** on Dec 1, 2026, worth the rest (exact split not yet fixed).
 
 | Deliverable | What is required | Spec sections |
 | --- | --- | --- |
 | Code repository (any Git platform, public) | All code needed; runs as-is when cloned by the grader (Fernanda); downloading reasonably sized data from inside the code is fine; heavy loads discouraged | 3, 4, 11 |
-| PDF report in the repo | Goal and scope, methods, results | 1, 5–10 |
+| Report notebook in the repo (`report/report_notebook.ipynb`) | Goal and scope, methods, results | 1, 5–10 |
 | Submission | Link to the public repo sent by email | 13 |
 | Defense | At most 10 min of slides, uninterrupted; then free Q&A on methods, results and extensions, including tests of our understanding of our own code | 10, 13 |
 
@@ -47,7 +47,7 @@ The [course evaluation page](https://pythonds.linogaliana.fr/content/annexes/eva
 - [ ] Public repo with frequent commits and pull requests, not a single upload.
 - [ ] A fresh clone runs end to end with no manual steps beyond installing dependencies; data downloads happen inside the code.
 - [ ] Download size kept reasonable (Section 3); no data files committed to Git.
-- [ ] `report.pdf` committed in the repo: goal and scope, methods, results.
+- [ ] Report notebook committed in the repo: goal and scope, methods, results.
 - [ ] Dependencies installable from `pyproject.toml` or `requirements.txt`.
 - [ ] Clean code: functions in `.py` modules, no copy-pasted cells.
 - [ ] Every table and figure in the report is commented and tied back to the question.
@@ -116,7 +116,7 @@ The pipeline has three layers, each saved as parquet in the gitignored `data/` f
 **Storage:**
 
 - No data in Git: `data/` is in `.gitignore`; the code regenerates everything from public Binance URLs.
-- Local parquet cache, so re-running the notebook after the first download takes seconds.
+- Local parquet cache, so re-running the report notebook after the first download takes seconds.
 - Tools: pandas throughout (1-min data for one symbol is small); DuckDB or polars only if a step turns out slow.
 
 **Coin- and horizon-agnostic design:**
@@ -308,7 +308,6 @@ Rehearse to 9 minutes; the Q&A will probe methods, extensions and our own code.
 ```
 project/
 ├── README.md            # question, one-command run, expected download size and runtime
-├── report.pdf           # the graded report: goal and scope, methods, results
 ├── spec.md              # this project spec (exported from the shared doc)
 ├── pyproject.toml       # pinned dependencies (uv or pip)
 ├── config.yaml          # symbol, horizon_minutes, dates, lags, paths
@@ -324,10 +323,8 @@ project/
 │   ├── models.py        # ablation fits (block A vs A + B)
 │   ├── evaluate.py      # walk-forward, metrics, Clark-West, DM
 │   └── plots.py         # one function per figure
-├── notebooks/
-│   └── analysis.ipynb   # runs top to bottom, imports src/
 ├── report/
-│   └── report.tex       # LaTex source rendered to report.pdf
+│   └── report_notebook.ipynb  # the graded report: runs top to bottom, imports src/
 ├── slides/              # defense deck
 └── tests/               # small checks: no-lookahead, timestamp units
 ```
@@ -339,7 +336,7 @@ project/
 - README states the expected download size and runtime, measured on a fresh clone.
 - No secrets needed (public endpoints). If a key is ever added, it goes in `.env`, never in code.
 - A no-lookahead unit test: changing data after *t* must never change features at *t*.
-- The report is written in Quarto from the same saved figures, then rendered to `report.pdf` and committed, so text and code agree.
+- The report is a notebook that calls the same `src/` functions as the pipeline, so text and code agree.
 - Before Nov 24: fresh clone on a different machine, fresh environment, run everything.
 
 **Git workflow:**
@@ -382,14 +379,14 @@ project/
 | Data pipeline | Oct 12 – Oct 26 |
 | Features + descriptive analysis | Oct 22 – Nov 6 |
 | Models + testing | Nov 2 – Nov 16 |
-| Figures + PDF report | Nov 9 – Nov 22 |
+| Figures + report notebook | Nov 9 – Nov 22 |
 | Analysis freeze | Nov 16 |
 | Fresh-clone run | Nov 21 |
 | **Repo due (23:59 Paris time)** | **Nov 24** |
 | Slides + rehearsal | Nov 25 – Nov 30 |
 | Defense | Dec 1 |
 
-The schedule is tight: seven weeks from today to the repo deadline. Phases overlap so nobody waits — features start on the first cleaned month while the pipeline finishes the rest. The analysis freezes on Nov 16; the last week before submission is for the PDF report, the fresh-clone test and fixes. Send the public repo link by email before Nov 24, 23:59 Paris time.
+The schedule is tight: seven weeks from today to the repo deadline. Phases overlap so nobody waits — features start on the first cleaned month while the pipeline finishes the rest. The analysis freezes on Nov 16; the last week before submission is for the report notebook, the fresh-clone test and fixes. Send the public repo link by email before Nov 24, 23:59 Paris time.
 
 **First actions (this week):**
 
