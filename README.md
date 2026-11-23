@@ -16,7 +16,7 @@ In crypto, a large share of price discovery is thought to happen on perpetual fu
 - a detailed descriptive analysis of how spot and perp interact, before any model;
 - a pipeline where the coin, horizon and sample window are settings in `config.yaml`, so the same code runs on any Binance pair and horizon without edits. Other coins and horizons are not part of the analysis.
 
-The full plan is in [spec.md](spec.md) and the results are in [report.pdf](report.pdf).
+The full plan is in [spec.md](spec.md). The report is the notebook [report/report_notebook.ipynb](report/report_notebook.ipynb): it describes every step of the project, from data collection to the model results, and runs the whole pipeline top to bottom.
 
 ## Install
 
@@ -50,7 +50,7 @@ Options:
 - `--quick` runs on the first month only, as a fast check that everything works. Its figures and tables go to `data/quick/`, so they never overwrite the report's. The models are skipped, because the walk-forward needs at least 3 months of data (one to fit, one to tune, one to test).
 - `--config path/to/config.yaml` uses another symbol, horizon, window or data folder.
 
-`notebooks/analysis.ipynb` walks through the same analysis with comments and reads the same `src/` functions. Run the pipeline first, so the notebook finds the data already downloaded.
+`report/report_notebook.ipynb`, the report, runs the same five steps with the same `src/` functions and comments every result. It works on its own from an empty `data/` folder; after `python -m src.pipeline` it reuses the data already downloaded.
 All data comes from public Binance URLs (no API key) and is stored in the gitignored `data/` folder. Files already there are not downloaded again, and clean tables and panels already there are not rebuilt: after changing the cleaning or panel code, delete `data/clean/` and `data/panel/` to rebuild them.
 
 ## Download size and runtime
@@ -73,7 +73,6 @@ Before downloading, the pipeline checks that spot and perp candles cover the who
 
 ```
 ├── README.md            # this file
-├── report.pdf           # the report: goal and scope, methods, results
 ├── spec.md              # project spec
 ├── pyproject.toml       # pinned dependencies
 ├── config.yaml          # every run parameter: symbol, horizon, dates, lags, paths, seed
@@ -89,10 +88,8 @@ Before downloading, the pipeline checks that spot and perp candles cover the who
 │   ├── models.py        # targets and model fits
 │   ├── evaluate.py      # walk-forward, metrics, Clark-West, Diebold-Mariano, the full ablation
 │   └── plots.py         # one function per figure
-├── notebooks/
-│   └── analysis.ipynb   # the analysis with comments, built on src/
 ├── report/
-│   ├── report.tex       # LaTeX source of report.pdf
+│   ├── report_notebook.ipynb  # the report: every step of the project, built on src/
 │   ├── figures/         # figures written by the pipeline: gitignored
 │   └── tables/          # tables written by the pipeline: gitignored
 ├── slides/              # defense slides

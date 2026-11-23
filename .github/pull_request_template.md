@@ -7,4 +7,4 @@ Closes #
 ## How it was tested
 
 - [ ] `pytest` passes
-- [ ] Notebook outputs stripped (`nb-clean check notebooks/`)
+- [ ] Notebook outputs stripped (`nb-clean check report/`)
