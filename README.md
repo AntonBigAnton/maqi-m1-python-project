@@ -1,5 +1,22 @@
-# maqi-m1-python-project
-Python For Data Science project
+# Does perp flow and positioning improve 15-minute BTC spot prediction?
+
+Python for Data Science course project.
+
+## Research question and scope
+
+**Question.** Does perpetual futures flow and positioning improve short-horizon BTC spot price prediction over a spot-only baseline?
+
+In crypto, a large share of price discovery is thought to happen on perpetual futures ("perps") rather than spot. Perps also carry information spot cannot: leveraged positioning (open interest), the cost of holding positions (funding) and the perp-spot premium (basis). If that information reaches spot with a delay, it should improve spot forecasts.
+
+**Hypotheses.**
+- **H1:** adding perp features to a spot-only model improves out-of-sample forecasts of the 15-minute BTC spot return.
+- **H2:** perp-to-spot lead-lag is visible in the descriptive analysis (cross-correlations, Granger tests) and fades within the 15-minute window.
+
+**Scope.** One coin, BTC: BTCUSDT spot against the BTCUSDT USD-M perpetual on Binance, from 2026-01-01 to 2026-06-30. One forecast horizon: 15 minutes. The work goes into two places instead of breadth:
+- a detailed descriptive analysis of how spot and perp interact, before any model;
+- a pipeline where the coin, horizon and sample window are settings in `config.yaml`, so the same code runs on any Binance pair and horizon without edits. Other coins and horizons are not part of the analysis.
+
+The full plan is in [spec.md](spec.md). The report is the notebook [report/report_notebook.ipynb](report/report_notebook.ipynb): it describes every step of the project, from data collection to the model results, and runs the whole pipeline top to bottom.
 
 ## Install
 
@@ -19,25 +36,66 @@ pip install -e ".[dev]"
 python -m src.pipeline
 ```
 
-This downloads the data, cleans it into one table per dataset and builds the 1-minute spot/perp panel (see [Cleaning and the 1-minute panel](#cleaning-and-the-1-minute-panel)).
+This one command, run from an empty `data/` folder, produces every table and figure of the report in five logged steps:
 
-Add `--quick` to run on one month, or `--config path/to/config.yaml` to use another symbol, window or data folder.
+| Step | Code | Output |
+| --- | --- | --- |
+| 1. Fetch | `src/fetch.py` | `data/raw/`: Binance files exactly as downloaded |
+| 2. Clean | `src/clean.py`, `src/panel.py` | `data/clean/` and the 1-minute spot/perp panel in `data/panel/` (see [Cleaning and the 1-minute panel](#cleaning-and-the-1-minute-panel)) |
+| 3. Features | `src/features.py` | Block A and block B features (see [Features](#features)) |
+| 4. Descriptive analysis | `src/descriptive.py`, `src/plots.py` | Figures 1 to 10 in `report/figures/`, descriptive tables in `report/tables/` |
+| 5. Models | `src/evaluate.py`, `src/models.py`, `src/plots.py` | The ablation tables in `report/tables/` (see [Running the full ablation](#running-the-full-ablation)) and figures 11 and 12 |
+
+Options:
+- `--quick` runs on the first month only, as a fast check that everything works. Its figures and tables go to `data/quick/`, so they never overwrite the report's. The models are skipped, because the walk-forward needs at least 3 months of data (one to fit, one to tune, one to test).
+- `--config path/to/config.yaml` uses another symbol, horizon, window or data folder.
+
+`report/report_notebook.ipynb`, the report, runs the same five steps with the same `src/` functions and comments every result. It works on its own from an empty `data/` folder; after `python -m src.pipeline` it reuses the data already downloaded.
 All data comes from public Binance URLs (no API key) and is stored in the gitignored `data/` folder. Files already there are not downloaded again, and clean tables and panels already there are not rebuilt: after changing the cleaning or panel code, delete `data/clean/` and `data/panel/` to rebuild them.
 
-## Data collection size and runtime
+## Download size and runtime
 
-Measured for BTCUSDT, 2026-01-01 to 2026-06-30, on one Windows laptop:
+Measured for BTCUSDT, 2026-01-01 to 2026-06-30, on one Windows laptop (2026-11-22):
 
 | | |
 | --- | --- |
-| Download size | 31 MB |
-| Size on disk (zips and extracted CSVs) | 131 MB |
-| First run | about 4.5 minutes |
-| Re-run with data already present | about 3 seconds |
+| Download size | 31 MB (202 files) |
+| `data/` on disk after a full run (zips, extracted CSVs, parquet tables, predictions) | 255 MB |
+| Full run from an empty `data/` | about 7 minutes: 4.5 to download, 0.5 for the descriptive analysis, 2 for the models |
+| Re-run with the data already downloaded | about 3 minutes (the analysis and models are always recomputed) |
+| `--quick` run with the data already downloaded | about 10 seconds |
 
 Every download is recorded in `data/raw/download_log.csv` (file, URL, size, SHA-256, checksum status).
 
 Before downloading, the pipeline checks that spot and perp candles cover the whole sample window and stops with an error if they do not. The result is saved to `data/availability_<symbol>.csv` for the report.
+
+## Repo structure
+
+```
+├── README.md            # this file
+├── spec.md              # project spec
+├── pyproject.toml       # pinned dependencies
+├── config.yaml          # every run parameter: symbol, horizon, dates, lags, paths, seed
+├── src/
+│   ├── pipeline.py      # entry point: fetch → clean → features → models → figures
+│   ├── config.py        # loads config.yaml
+│   ├── fetch.py         # archive downloads, checksums, REST calls and their cache
+│   ├── schemas.py       # column layouts of the Binance files and the clean tables
+│   ├── clean.py         # raw files → one clean table per dataset
+│   ├── panel.py         # clean tables → the 1-minute spot/perp panel
+│   ├── features.py      # blocks A and B, deleveraging proxy
+│   ├── descriptive.py   # descriptive tables and tests (lead-lag, Granger, event study)
+│   ├── models.py        # targets and model fits
+│   ├── evaluate.py      # walk-forward, metrics, Clark-West, Diebold-Mariano, the full ablation
+│   └── plots.py         # one function per figure
+├── report/
+│   ├── report_notebook.ipynb  # the report: every step of the project, built on src/
+│   ├── figures/         # figures written by the pipeline: gitignored
+│   └── tables/          # tables written by the pipeline: gitignored
+├── slides/              # defense slides
+├── tests/               # pytest checks (no look-ahead, timestamp units, caching, models)
+└── data/                # downloaded and derived data: gitignored, rebuilt by the pipeline
+```
 
 ## Datasets: coverage and timing
 
