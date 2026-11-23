@@ -51,6 +51,13 @@ Options:
 - `--config path/to/config.yaml` uses another symbol, horizon, window or data folder.
 
 `report/report_notebook.ipynb`, the report, runs the same five steps with the same `src/` functions and comments every result. It works on its own from an empty `data/` folder; after `python -m src.pipeline` it reuses the data already downloaded.
+
+To open it, install the project as in [Install](#install), then either:
+- **VS Code:** open `report/report_notebook.ipynb` and select the `.venv` Python as the kernel, or
+- **Jupyter:** install it first (`pip install jupyter`; it is not one of the pinned dependencies), then run `jupyter lab report/report_notebook.ipynb` from the repo root.
+
+Run the cells top to bottom on a fresh kernel.
+
 All data comes from public Binance URLs (no API key) and is stored in the gitignored `data/` folder. Files already there are not downloaded again, and clean tables and panels already there are not rebuilt: after changing the cleaning or panel code, delete `data/clean/` and `data/panel/` to rebuild them.
 
 ## Download size and runtime
@@ -92,7 +99,6 @@ Before downloading, the pipeline checks that spot and perp candles cover the who
 │   ├── report_notebook.ipynb  # the report: every step of the project, built on src/
 │   ├── figures/         # figures written by the pipeline: gitignored
 │   └── tables/          # tables written by the pipeline: gitignored
-├── slides/              # defense slides
 ├── tests/               # pytest checks (no look-ahead, timestamp units, caching, models)
 └── data/                # downloaded and derived data: gitignored, rebuilt by the pipeline
 ```
